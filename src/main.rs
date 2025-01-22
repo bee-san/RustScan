@@ -17,6 +17,7 @@ use std::string::ToString;
 use std::time::Duration;
 
 use rustscan::address::parse_addresses;
+use rustscan::scanner::PortStatus;
 
 extern crate colorful;
 extern crate dirs;
@@ -35,8 +36,6 @@ extern crate log;
 /// Faster Nmap scanning with Rust
 /// If you're looking for the actual scanning, check out the module Scanner
 fn main() {
-    use rustscan::scanner::PortStatus;
-
     #[cfg(not(unix))]
     let _ = ansi_term::enable_ansi_support();
 
