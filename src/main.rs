@@ -91,9 +91,9 @@ fn main() {
         Duration::from_millis(opts.timeout.into()),
         opts.tries,
         opts.greppable,
-        PortStrategy::pick(&opts.range, opts.ports, opts.scan_order),
+        PortStrategy::pick(&opts.range, opts.clone().ports, opts.scan_order),
         opts.accessible,
-        opts.exclude_ports.unwrap_or_default(),
+        opts.exclude_ports.clone().unwrap_or_default(),
         opts.udp,
         opts.closed,
     );
@@ -142,63 +142,29 @@ fn main() {
     }
 
     let mut script_bench = NamedTimer::start("Scripts");
-    for (ip, ports) in &open_ports_per_ip {
-        let vec_str_ports: Vec<String> = ports.iter().map(ToString::to_string).collect();
 
-        // nmap port style is 80,443. Comma separated with no spaces.
-        let ports_str = vec_str_ports.join(",");
-
-        // if option scripts is none, no script will be spawned
-        if opts.greppable || opts.scripts == ScriptsRequired::None {
-            println!("{} -> [{}]", &ip, ports_str);
-            continue;
-        }
-        detail!("Starting Script(s)", opts.greppable, opts.accessible);
-
-        // Run all the scripts we found and parsed based on the script config file tags field.
-        for mut script_f in scripts_to_run.clone() {
-            // This part allows us to add commandline arguments to the Script call_format, appending them to the end of the command.
-            if !opts.command.is_empty() {
-                let user_extra_args = &opts.command.join(" ");
-                debug!("Extra args vec {:?}", user_extra_args);
-                if script_f.call_format.is_some() {
-                    let mut call_f = script_f.call_format.unwrap();
-                    call_f.push(' ');
-                    call_f.push_str(user_extra_args);
-                    output!(
-                        format!("Running script {:?} on ip {}\nDepending on the complexity of the script, results may take some time to appear.", call_f, &ip),
-                        opts.greppable,
-                        opts.accessible
-                    );
-                    debug!("Call format {}", call_f);
-                    script_f.call_format = Some(call_f);
-                }
-            }
-
-            // Building the script with the arguments from the ScriptFile, and ip-ports.
-            let script = Script::build(
-                script_f.path,
-                *ip,
-                ports.clone(),
-                script_f.port,
-                script_f.ports_separator,
-                script_f.tags,
-                script_f.call_format,
-            );
-            match script.run() {
-                Ok(script_result) => {
-                    detail!(script_result.to_string(), opts.greppable, opts.accessible);
-                }
-                Err(e) => {
-                    warning!(&format!("Error {e}"), opts.greppable, opts.accessible);
-                }
-            }
-        }
+    print_summary(open_ports_per_ip, &scripts_to_run, &opts);
+    // We only print closed ports if the user requested it.
+    if opts.closed {
+        println!("closed ports:");
+        print_summary(closed_ports_per_ip, &scripts_to_run, &opts);
     }
 
-    // TODO:
-    println!("closed ports:");
-    for (ip, ports) in &closed_ports_per_ip {
+    // To use the runtime benchmark, run the process as: RUST_LOG=info ./rustscan
+    script_bench.end();
+    benchmarks.push(script_bench);
+    rustscan_bench.end();
+    benchmarks.push(rustscan_bench);
+    debug!("Benchmarks raw {:?}", benchmarks);
+    info!("{}", benchmarks.summary());
+}
+
+fn print_summary(
+    ports_per_ip: HashMap<IpAddr, Vec<u16>>,
+    scripts_to_run: &Vec<ScriptFile>,
+    opts: &Opts,
+) {
+    for (ip, ports) in &ports_per_ip {
         let vec_str_ports: Vec<String> = ports.iter().map(ToString::to_string).collect();
 
         // nmap port style is 80,443. Comma separated with no spaces.
