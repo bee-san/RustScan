@@ -169,7 +169,7 @@ impl Scanner {
                     let mut error_string = e.to_string();
 
                     if e.kind() == io::ErrorKind::ConnectionRefused {
-                        if !self.greppable {
+                        if !self.greppable && self.closed {
                             if self.accessible {
                                 println!("Closed {socket}");
                             } else {
