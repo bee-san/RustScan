@@ -353,6 +353,7 @@ mod tests {
             true,
             vec![9000],
             false,
+            false,
         );
         block_on(scanner.run());
         // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
@@ -377,6 +378,7 @@ mod tests {
             true,
             vec![9000],
             false,
+            false,
         );
         block_on(scanner.run());
         // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
@@ -400,6 +402,7 @@ mod tests {
             true,
             vec![9000],
             false,
+            false,
         );
         block_on(scanner.run());
         assert_eq!(1, 1);
@@ -421,6 +424,7 @@ mod tests {
             strategy,
             true,
             vec![9000],
+            false,
             false,
         );
         block_on(scanner.run());
@@ -447,6 +451,7 @@ mod tests {
             true,
             vec![9000],
             false,
+            false,
         );
         block_on(scanner.run());
         assert_eq!(1, 1);
@@ -471,6 +476,7 @@ mod tests {
             true,
             vec![9000],
             true,
+            false,
         );
         block_on(scanner.run());
         // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
@@ -495,6 +501,7 @@ mod tests {
             true,
             vec![9000],
             true,
+            false,
         );
         block_on(scanner.run());
         // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
@@ -518,6 +525,7 @@ mod tests {
             true,
             vec![9000],
             true,
+            false,
         );
         block_on(scanner.run());
         assert_eq!(1, 1);
@@ -540,6 +548,7 @@ mod tests {
             true,
             vec![9000],
             true,
+            false,
         );
         block_on(scanner.run());
         assert_eq!(1, 1);
