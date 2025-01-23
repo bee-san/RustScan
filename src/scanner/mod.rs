@@ -37,6 +37,13 @@ pub struct Scanner {
     accessible: bool,
     exclude_ports: Vec<u16>,
     udp: bool,
+    closed: bool,
+}
+
+#[derive(Debug)]
+pub enum PortStatus {
+    Open(SocketAddr),
+    Closed(SocketAddr),
 }
 
 // Allowing too many arguments for clippy.
@@ -52,6 +59,7 @@ impl Scanner {
         accessible: bool,
         exclude_ports: Vec<u16>,
         udp: bool,
+        closed: bool,
     ) -> Self {
         Self {
             batch_size,
@@ -63,13 +71,14 @@ impl Scanner {
             accessible,
             exclude_ports,
             udp,
+            closed,
         }
     }
 
     /// Runs scan_range with chunk sizes
     /// If you want to run RustScan normally, this is the entry point used
     /// Returns all open ports as `Vec<u16>`
-    pub async fn run(&self) -> Vec<SocketAddr> {
+    pub async fn run(&self) -> Vec<PortStatus> {
         let ports: Vec<u16> = self
             .port_strategy
             .order()
@@ -78,7 +87,7 @@ impl Scanner {
             .copied()
             .collect();
         let mut socket_iterator: SocketIterator = SocketIterator::new(&self.ips, &ports);
-        let mut open_sockets: Vec<SocketAddr> = Vec::new();
+        let mut found_sockets: Vec<PortStatus> = Vec::new();
         let mut ftrs = FuturesUnordered::new();
         let mut errors: HashSet<String> = HashSet::new();
         let udp_map = get_parsed_data();
@@ -103,7 +112,7 @@ impl Scanner {
             }
 
             match result {
-                Ok(socket) => open_sockets.push(socket),
+                Ok(socket) => found_sockets.push(socket),
                 Err(e) => {
                     let error_string = e.to_string();
                     if errors.len() < self.ips.len() * 1000 {
@@ -113,8 +122,8 @@ impl Scanner {
             }
         }
         debug!("Typical socket connection errors {errors:?}");
-        debug!("Open Sockets found: {:?}", &open_sockets);
-        open_sockets
+        debug!("Open Sockets found: {:?}", &found_sockets);
+        found_sockets
     }
 
     /// Given a socket, scan it self.tries times.
@@ -135,7 +144,7 @@ impl Scanner {
         &self,
         socket: SocketAddr,
         udp_map: BTreeMap<Vec<u16>, Vec<u8>>,
-    ) -> io::Result<SocketAddr> {
+    ) -> io::Result<PortStatus> {
         if self.udp {
             return self.scan_udp_socket(socket, udp_map).await;
         }
@@ -154,10 +163,22 @@ impl Scanner {
                     self.fmt_ports(socket);
 
                     debug!("Return Ok after {nr_try} tries");
-                    return Ok(socket);
+                    return Ok(PortStatus::Open(socket));
                 }
                 Err(e) => {
                     let mut error_string = e.to_string();
+
+                    if e.kind() == io::ErrorKind::ConnectionRefused {
+                        if !self.greppable {
+                            if self.accessible {
+                                println!("Closed {socket}");
+                            } else {
+                                println!("Closed {}", socket.to_string().red());
+                            }
+                        }
+
+                        return Ok(PortStatus::Closed(socket));
+                    }
 
                     assert!(!error_string.to_lowercase().contains("too many open files"), "Too many open files. Please reduce batch size. The default is 5000. Try -b 2500.");
 
@@ -176,7 +197,7 @@ impl Scanner {
         &self,
         socket: SocketAddr,
         udp_map: BTreeMap<Vec<u16>, Vec<u8>>,
-    ) -> io::Result<SocketAddr> {
+    ) -> io::Result<PortStatus> {
         let mut payload: Vec<u8> = Vec::new();
         for (key, value) in udp_map {
             if key.contains(&socket.port()) {
@@ -187,7 +208,7 @@ impl Scanner {
         let tries = self.tries.get();
         for _ in 1..=tries {
             match self.udp_scan(socket, &payload, self.timeout).await {
-                Ok(true) => return Ok(socket),
+                Ok(true) => return Ok(PortStatus::Open(socket)),
                 Ok(false) => continue,
                 Err(e) => return Err(e),
             }
