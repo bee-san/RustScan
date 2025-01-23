@@ -35,6 +35,8 @@ extern crate log;
 /// Faster Nmap scanning with Rust
 /// If you're looking for the actual scanning, check out the module Scanner
 fn main() {
+    use rustscan::scanner::PortStatus;
+
     #[cfg(not(unix))]
     let _ = ansi_term::enable_ansi_support();
 
@@ -93,6 +95,7 @@ fn main() {
         opts.accessible,
         opts.exclude_ports.unwrap_or_default(),
         opts.udp,
+        opts.closed,
     );
     debug!("Scanner finished building: {scanner:?}");
 
@@ -101,17 +104,28 @@ fn main() {
     portscan_bench.end();
     benchmarks.push(portscan_bench);
 
-    let mut ports_per_ip = HashMap::new();
+    let mut open_ports_per_ip = HashMap::new();
+    let mut closed_ports_per_ip = HashMap::new();
 
     for socket in scan_result {
-        ports_per_ip
-            .entry(socket.ip())
-            .or_insert_with(Vec::new)
-            .push(socket.port());
+        match socket {
+            PortStatus::Open(socket) => {
+                open_ports_per_ip
+                    .entry(socket.ip())
+                    .or_insert_with(Vec::new)
+                    .push(socket.port());
+            }
+            PortStatus::Closed(socket) => {
+                closed_ports_per_ip
+                    .entry(socket.ip())
+                    .or_insert_with(Vec::new)
+                    .push(socket.port());
+            }
+        }
     }
 
     for ip in ips {
-        if ports_per_ip.contains_key(&ip) {
+        if open_ports_per_ip.contains_key(&ip) || closed_ports_per_ip.contains_key(&ip) {
             continue;
         }
 
@@ -128,7 +142,63 @@ fn main() {
     }
 
     let mut script_bench = NamedTimer::start("Scripts");
-    for (ip, ports) in &ports_per_ip {
+    for (ip, ports) in &open_ports_per_ip {
+        let vec_str_ports: Vec<String> = ports.iter().map(ToString::to_string).collect();
+
+        // nmap port style is 80,443. Comma separated with no spaces.
+        let ports_str = vec_str_ports.join(",");
+
+        // if option scripts is none, no script will be spawned
+        if opts.greppable || opts.scripts == ScriptsRequired::None {
+            println!("{} -> [{}]", &ip, ports_str);
+            continue;
+        }
+        detail!("Starting Script(s)", opts.greppable, opts.accessible);
+
+        // Run all the scripts we found and parsed based on the script config file tags field.
+        for mut script_f in scripts_to_run.clone() {
+            // This part allows us to add commandline arguments to the Script call_format, appending them to the end of the command.
+            if !opts.command.is_empty() {
+                let user_extra_args = &opts.command.join(" ");
+                debug!("Extra args vec {:?}", user_extra_args);
+                if script_f.call_format.is_some() {
+                    let mut call_f = script_f.call_format.unwrap();
+                    call_f.push(' ');
+                    call_f.push_str(user_extra_args);
+                    output!(
+                        format!("Running script {:?} on ip {}\nDepending on the complexity of the script, results may take some time to appear.", call_f, &ip),
+                        opts.greppable,
+                        opts.accessible
+                    );
+                    debug!("Call format {}", call_f);
+                    script_f.call_format = Some(call_f);
+                }
+            }
+
+            // Building the script with the arguments from the ScriptFile, and ip-ports.
+            let script = Script::build(
+                script_f.path,
+                *ip,
+                ports.clone(),
+                script_f.port,
+                script_f.ports_separator,
+                script_f.tags,
+                script_f.call_format,
+            );
+            match script.run() {
+                Ok(script_result) => {
+                    detail!(script_result.to_string(), opts.greppable, opts.accessible);
+                }
+                Err(e) => {
+                    warning!(&format!("Error {e}"), opts.greppable, opts.accessible);
+                }
+            }
+        }
+    }
+
+    // TODO:
+    println!("closed ports:");
+    for (ip, ports) in &closed_ports_per_ip {
         let vec_str_ports: Vec<String> = ports.iter().map(ToString::to_string).collect();
 
         // nmap port style is 80,443. Comma separated with no spaces.
