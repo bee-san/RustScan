@@ -97,6 +97,7 @@ macro_rules! funny_opening {
             "RustScan: Exploring the digital landscape, one IP at a time.",
             "TreadStone was here 🚀",
             "With RustScan, I scan ports so fast, even my firewall gets whiplash 💨",
+            "Scanning ports so fast, even the internet got a speeding ticket!",
         ];
         let random_quote = quotes.choose(&mut rand::rng()).unwrap();
 
