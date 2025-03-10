@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-const LOWEST_PORT_NUMBER: u16 = 1;
-const TOP_PORT_NUMBER: u16 = 65535;
+pub const LOWEST_PORT_NUMBER: u16 = 1;
+pub const TOP_PORT_NUMBER: u16 = 65535;
 
 /// Represents the strategy in which the port scanning will run.
 ///   - Serial will run from start to end, for example 1 to 1_000.
@@ -35,27 +35,42 @@ pub struct PortRange {
     pub end: u16,
 }
 
+#[derive(Deserialize, Debug, Clone)]
+pub enum PortInput {
+    Range(Vec<u16>),
+    Single(u16),
+}
+
 #[cfg(not(tarpaulin_include))]
-fn parse_range(input: &str) -> Result<PortRange, String> {
-    let range = input
-        .split('-')
-        .map(str::parse)
-        .collect::<Result<Vec<u16>, std::num::ParseIntError>>();
+fn parse_range(input: &str) -> Result<PortInput, String> {
+    if input.contains('-') {
+        let range: Vec<&str> = input.split('-').collect();
+        if range.len() != 2 {
+            return Err(String::from(
+                "the range format must be 'start-end'. Example: 1-1000.",
+            ));
+        }
 
-    if range.is_err() {
-        return Err(String::from(
-            "the range format must be 'start-end'. Example: 1-1000.",
-        ));
-    }
+        let start = range[0]
+            .parse::<u16>()
+            .map_err(|_| String::from("Invalid start port number in range"))?;
 
-    match range.unwrap().as_slice() {
-        [start, end] => Ok(PortRange {
-            start: *start,
-            end: *end,
-        }),
-        _ => Err(String::from(
-            "the range format must be 'start-end'. Example: 1-1000.",
-        )),
+        let end = range[1]
+            .parse::<u16>()
+            .map_err(|_| String::from("Invalid end port number in range"))?;
+
+        if start > end {
+            return Err(String::from(
+                "Start port must be less than or equal to end port",
+            ));
+        }
+
+        return Ok(PortInput::Range((start..=end).collect()));
+    } else {
+        let port = input
+            .parse::<u16>()
+            .map_err(|_| String::from("Invalid port number"))?;
+        return Ok(PortInput::Single(port));
     }
 }
 
@@ -77,13 +92,11 @@ pub struct Opts {
     #[arg(short, long, value_delimiter = ',')]
     pub addresses: Vec<String>,
 
-    /// A list of comma separated ports to be scanned. Example: 80,443,8080.
-    #[arg(short, long, value_delimiter = ',')]
-    pub ports: Option<Vec<u16>>,
+    /// A list of comma separated ports and ranges to be scanned. Example: 80,443,8080,22-25.
+    #[arg(short='p', long="ports", value_delimiter = ',', value_parser = parse_range)]
+    pub port_inputs: Option<Vec<PortInput>>,
 
-    /// A range of ports with format start-end. Example: 1-1000.
-    #[arg(short, long, conflicts_with = "ports", value_parser = parse_range)]
-    pub range: Option<PortRange>,
+    pub ports: Option<Vec<u16>>,
 
     /// Whether to ignore the configuration file or not.
     #[arg(short, long)]
@@ -169,11 +182,26 @@ impl Opts {
     pub fn read() -> Self {
         let mut opts = Opts::parse();
 
-        if opts.ports.is_none() && opts.range.is_none() {
-            opts.range = Some(PortRange {
-                start: LOWEST_PORT_NUMBER,
-                end: TOP_PORT_NUMBER,
-            });
+        if opts.port_inputs.is_none() {
+            opts.ports = Some((LOWEST_PORT_NUMBER..=TOP_PORT_NUMBER).collect());
+        } else {
+            let mut ports = Vec::new();
+            for input in opts.port_inputs.take().unwrap() {
+                match input {
+                    PortInput::Range(range) => ports.extend(range),
+                    PortInput::Single(port) => ports.push(port),
+                }
+            }
+
+            // Remove duplicates
+            let mut unique_ports: Vec<u16> = Vec::new();
+            for port in ports.clone() {
+                if !unique_ports.contains(&port) {
+                    unique_ports.push(port);
+                }
+            }
+
+            opts.ports = Some(unique_ports);
         }
 
         opts
@@ -225,7 +253,7 @@ impl Opts {
             self.ports = Some(ports);
         }
 
-        merge_optional!(range, resolver, ulimit, exclude_ports, exclude_addresses);
+        merge_optional!(resolver, ulimit, exclude_ports, exclude_addresses);
     }
 }
 
@@ -234,7 +262,7 @@ impl Default for Opts {
         Self {
             addresses: vec![],
             ports: None,
-            range: None,
+            port_inputs: None,
             greppable: true,
             batch_size: 0,
             timeout: 0,
@@ -426,7 +454,6 @@ mod tests {
 
         opts.merge_optional(&config);
 
-        assert_eq!(opts.range, config.range);
         assert_eq!(opts.ulimit, config.ulimit);
         assert_eq!(opts.resolver, config.resolver);
     }
