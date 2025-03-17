@@ -89,7 +89,7 @@ fn main() {
         Duration::from_millis(opts.timeout.into()),
         opts.tries,
         opts.greppable,
-        PortStrategy::pick(&opts.range, opts.ports, opts.scan_order),
+        PortStrategy::pick(opts.ports, opts.scan_order),
         opts.accessible,
         opts.exclude_ports.unwrap_or_default(),
         opts.udp,
