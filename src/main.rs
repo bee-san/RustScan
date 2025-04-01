@@ -46,7 +46,7 @@ fn main() {
     let config = Config::read(opts.config_path.clone());
     opts.merge(&config);
 
-    debug!("Main() `opts` arguments are {:?}", opts);
+    debug!("Main() `opts` arguments are {opts:?}");
 
     let scripts_to_run: Vec<ScriptFile> = match init_scripts(&opts.scripts) {
         Ok(scripts_to_run) => scripts_to_run,
@@ -94,7 +94,7 @@ fn main() {
         opts.exclude_ports.unwrap_or_default(),
         opts.udp,
     );
-    debug!("Scanner finished building: {:?}", scanner);
+    debug!("Scanner finished building: {scanner:?}");
 
     let mut portscan_bench = NamedTimer::start("Portscan");
     let scan_result = block_on(scanner.run());
@@ -146,7 +146,7 @@ fn main() {
             // This part allows us to add commandline arguments to the Script call_format, appending them to the end of the command.
             if !opts.command.is_empty() {
                 let user_extra_args = &opts.command.join(" ");
-                debug!("Extra args vec {:?}", user_extra_args);
+                debug!("Extra args vec {user_extra_args:?}");
                 if script_f.call_format.is_some() {
                     let mut call_f = script_f.call_format.unwrap();
                     call_f.push(' ');
@@ -156,7 +156,7 @@ fn main() {
                         opts.greppable,
                         opts.accessible
                     );
-                    debug!("Call format {}", call_f);
+                    debug!("Call format {call_f}");
                     script_f.call_format = Some(call_f);
                 }
             }
@@ -187,7 +187,7 @@ fn main() {
     benchmarks.push(script_bench);
     rustscan_bench.end();
     benchmarks.push(rustscan_bench);
-    debug!("Benchmarks raw {:?}", benchmarks);
+    debug!("Benchmarks raw {benchmarks:?}");
     info!("{}", benchmarks.summary());
 }
 
