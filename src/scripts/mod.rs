@@ -314,7 +314,7 @@ fn execute_script(script: &str) -> Result<String> {
             Ok(String::from_utf8_lossy(&output.stdout).into_owned())
         }
         Err(error) => {
-            debug!("Command error {}", error.to_string());
+            debug!("Command error {}", error);
             Err(anyhow!(error.to_string()))
         }
     }
@@ -373,7 +373,7 @@ impl ScriptFile {
                 Some(parsed)
             }
             Err(e) => {
-                debug!("Failed to parse ScriptFile headers {}", e.to_string());
+                debug!("Failed to parse ScriptFile headers {}", e);
                 None
             }
         }
