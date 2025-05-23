@@ -69,17 +69,11 @@ pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
         }
     }
 
-    // Finally, craft a list of addresses to be excluded from the scan.
-    let mut excluded_ips: BTreeSet<IpAddr> = BTreeSet::new();
-    if let Some(exclude_addresses) = &input.exclude_addresses {
-        for addr in exclude_addresses {
-            excluded_ips.extend(parse_address(addr, &backup_resolver));
-        }
-    }
+    let excluded_cidrs = parse_excluded_networks(&input.exclude_addresses, &backup_resolver);
 
     // Remove duplicated/excluded IPs.
     let mut seen = BTreeSet::new();
-    ips.retain(|ip| seen.insert(*ip) && !excluded_ips.contains(ip));
+    ips.retain(|ip| seen.insert(*ip) && !excluded_cidrs.iter().any(|cidr| cidr.contains(ip)));
 
     ips
 }
@@ -123,6 +117,46 @@ fn resolve_ips_from_host(source: &str, backup_resolver: &Resolver) -> Vec<IpAddr
     }
 
     ips
+}
+
+/// Parses excluded networks from a list of addresses.
+///
+/// This function handles three types of inputs:
+/// 1. CIDR notation (e.g. "192.168.0.0/24")
+/// 2. Single IP addresses (e.g. "192.168.0.1")
+/// 3. Hostnames that need to be resolved (e.g. "example.com")
+///
+/// ```rust
+/// # use rustscan::address::parse_excluded_networks;
+/// # use hickory_resolver::Resolver;
+/// let resolver = Resolver::default().unwrap();
+/// let excluded = parse_excluded_networks(&Some(vec!["192.168.0.0/24".to_owned()]), &resolver);
+/// ```
+pub fn parse_excluded_networks(
+    exclude_addresses: &Option<Vec<String>>,
+    resolver: &Resolver,
+) -> Vec<IpCidr> {
+    exclude_addresses
+        .iter()
+        .flatten()
+        .flat_map(|addr| parse_single_excluded_address(addr, resolver))
+        .collect()
+}
+
+/// Parses a single address into an IpCidr, handling CIDR notation, IP addresses, and hostnames.
+fn parse_single_excluded_address(addr: &str, resolver: &Resolver) -> Vec<IpCidr> {
+    if let Ok(cidr) = IpCidr::from_str(addr) {
+        return vec![cidr];
+    }
+
+    if let Ok(ip) = IpAddr::from_str(addr) {
+        return vec![IpCidr::new_host(ip)];
+    }
+
+    resolve_ips_from_host(addr, resolver)
+        .into_iter()
+        .map(IpCidr::new_host)
+        .collect()
 }
 
 /// Derive a DNS resolver.
