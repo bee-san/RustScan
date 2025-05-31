@@ -6,7 +6,7 @@ use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::Path;
 use std::str::FromStr;
 
-use cidr_utils::cidr::IpCidr;
+use cidr_utils::cidr::{IpCidr, IpInet};
 use hickory_resolver::{
     config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts},
     Resolver,
@@ -92,16 +92,21 @@ pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
 /// let ips = parse_address("127.0.0.1", &Resolver::default().unwrap());
 /// ```
 pub fn parse_address(address: &str, resolver: &Resolver) -> Vec<IpAddr> {
-    IpCidr::from_str(address)
-        .map(|cidr| cidr.iter().map(|c| c.address()).collect())
-        .ok()
-        .or_else(|| {
-            format!("{}:80", &address)
-                .to_socket_addrs()
-                .ok()
-                .map(|mut iter| vec![iter.next().unwrap().ip()])
-        })
-        .unwrap_or_else(|| resolve_ips_from_host(address, resolver))
+    if let Ok(addr) = IpAddr::from_str(address) {
+        // `address` is an IP string
+        vec![addr]
+    } else if let Ok(net_addr) = IpInet::from_str(address) {
+        // `address` is a CIDR string
+        net_addr.network().into_iter().addresses().collect()
+    } else {
+        // `address` is a hostname or DNS name
+        // attempt default DNS lookup
+        match format!("{address}:80").to_socket_addrs() {
+            Ok(mut iter) => vec![iter.next().unwrap().ip()],
+            // default lookup didn't work, so try again with the dedicated resolver
+            Err(_) => resolve_ips_from_host(address, resolver),
+        }
+    }
 }
 
 /// Uses DNS to get the IPS associated with host
@@ -398,6 +403,19 @@ mod tests {
         let ips = parse_addresses(&opts);
 
         assert_eq!(ips.len(), 2_048);
+    }
+
+    #[test]
+    fn parse_overspecific_cidr() {
+        // a canonical CIDR string has 0 in all host bits, but we want to treat any CIDR-like string as CIDR
+        let opts = Opts {
+            addresses: vec!["192.128.1.1/24".to_owned()],
+            ..Default::default()
+        };
+
+        let ips = parse_addresses(&opts);
+
+        assert_eq!(ips.len(), 256);
     }
 
     #[test]
