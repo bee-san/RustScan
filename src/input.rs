@@ -1,7 +1,6 @@
 //! Provides a means to read, parse and hold configuration options for scans.
 use clap::{Parser, ValueEnum};
 use serde_derive::Deserialize;
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -218,11 +217,7 @@ impl Opts {
 
         // Only use top ports when the user asks for them
         if self.top && config.ports.is_some() {
-            let mut ports: Vec<u16> = Vec::with_capacity(config.ports.as_ref().unwrap().len());
-            for entry in config.ports.as_ref().unwrap().keys() {
-                ports.push(entry.parse().unwrap());
-            }
-            self.ports = Some(ports);
+            self.ports = config.ports.clone();
         }
 
         merge_optional!(range, resolver, ulimit, exclude_ports, exclude_addresses);
@@ -263,7 +258,7 @@ impl Default for Opts {
 #[derive(Debug, Deserialize)]
 pub struct Config {
     addresses: Option<Vec<String>>,
-    ports: Option<HashMap<String, u16>>,
+    ports: Option<Vec<u16>>,
     range: Option<PortRange>,
     greppable: Option<bool>,
     accessible: Option<bool>,
