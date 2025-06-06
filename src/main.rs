@@ -142,11 +142,11 @@ fn main() {
 
     let mut script_bench = NamedTimer::start("Scripts");
 
-    print_summary(open_ports_per_ip, &scripts_to_run, &opts);
+    print_summary(&open_ports_per_ip, &scripts_to_run, &opts);
     // We only print closed ports if the user requested it.
     if opts.closed {
         println!("closed ports:");
-        print_summary(closed_ports_per_ip, &scripts_to_run, &opts);
+        print_summary(&closed_ports_per_ip, &scripts_to_run, &opts);
     }
 
     // To use the runtime benchmark, run the process as: RUST_LOG=info ./rustscan
@@ -154,16 +154,16 @@ fn main() {
     benchmarks.push(script_bench);
     rustscan_bench.end();
     benchmarks.push(rustscan_bench);
-    debug!("Benchmarks raw {:?}", benchmarks);
+    debug!("Benchmarks raw {benchmarks:?}");
     info!("{}", benchmarks.summary());
 }
 
 fn print_summary(
-    ports_per_ip: HashMap<IpAddr, Vec<u16>>,
-    scripts_to_run: &Vec<ScriptFile>,
+    ports_per_ip: &HashMap<IpAddr, Vec<u16>>,
+    scripts_to_run: &[ScriptFile],
     opts: &Opts,
 ) {
-    for (ip, ports) in &ports_per_ip {
+    for (ip, ports) in ports_per_ip {
         let vec_str_ports: Vec<String> = ports.iter().map(ToString::to_string).collect();
 
         // nmap port style is 80,443. Comma separated with no spaces.
@@ -177,7 +177,7 @@ fn print_summary(
         detail!("Starting Script(s)", opts.greppable, opts.accessible);
 
         // Run all the scripts we found and parsed based on the script config file tags field.
-        for mut script_f in scripts_to_run.clone() {
+        for mut script_f in scripts_to_run.iter().cloned() {
             // This part allows us to add commandline arguments to the Script call_format, appending them to the end of the command.
             if !opts.command.is_empty() {
                 let user_extra_args = &opts.command.join(" ");
@@ -216,14 +216,6 @@ fn print_summary(
             }
         }
     }
-
-    // To use the runtime benchmark, run the process as: RUST_LOG=info ./rustscan
-    script_bench.end();
-    benchmarks.push(script_bench);
-    rustscan_bench.end();
-    benchmarks.push(rustscan_bench);
-    debug!("Benchmarks raw {benchmarks:?}");
-    info!("{}", benchmarks.summary());
 }
 
 /// Prints the opening title of RustScan
