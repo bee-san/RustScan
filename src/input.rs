@@ -8,7 +8,7 @@ const LOWEST_PORT_NUMBER: u16 = 1;
 const TOP_PORT_NUMBER: u16 = 65535;
 
 // https://nullsec.us/top-1-000-tcp-and-udp-ports-nmap-default
-static TOP_1000_PORTS: [u16; 1000] = [
+const TOP_1000_PORTS: [u16; 1000] = [
     1, 3, 4, 6, 7, 9, 13, 17, 19, 20, 21, 22, 23, 24, 25, 26, 30, 32, 33, 37, 42, 43, 49, 53, 70,
     79, 80, 81, 82, 83, 84, 85, 88, 89, 90, 99, 100, 106, 109, 110, 111, 113, 119, 125, 135, 139,
     143, 144, 146, 161, 163, 179, 199, 211, 212, 222, 254, 255, 256, 259, 264, 280, 301, 306, 311,
@@ -95,8 +95,10 @@ pub enum ScriptsRequired {
     Custom,
 }
 
+pub type Ports = Vec<u16>;
+
 #[cfg(not(tarpaulin_include))]
-pub fn parse_ports_and_ranges(input: &str) -> Result<Vec<u16>, String> {
+pub fn parse_ports_and_ranges(input: &str) -> Result<Ports, String> {
     let mut ports = Vec::new();
 
     for part in input.split(',') {
@@ -194,7 +196,7 @@ pub struct Opts {
 
     /// A list of ports and/or port ranges to be scanned. Examples: 80,443,8080 or 1-1000 or 1-1000,8080
     #[arg(short, long, alias = "range", value_parser = parse_ports_and_ranges, conflicts_with = "top")]
-    pub ports: Option<Vec<u16>>,
+    pub ports: Option<Ports>,
 
     /// Whether to ignore the configuration file or not.
     #[arg(short, long)]
@@ -520,13 +522,13 @@ mod tests {
     fn opts_merge_optional_arguments() {
         let mut opts = Opts::default();
         let mut config = Config::default();
-        config.ports = Some((1..=1000).collect::<Vec<u16>>());
+        config.ports = Some((1..=1000).collect::<Vec<u16>>().into());
         config.ulimit = Some(1_000);
         config.resolver = Some("1.1.1.1".to_owned());
 
         opts.merge_optional(&config);
 
-        assert_eq!(opts.ports, Some((1..=1000).collect::<Vec<u16>>()));
+        assert_eq!(opts.ports, Some((1..=1000).collect::<Vec<u16>>().into()));
         assert_eq!(opts.ulimit, config.ulimit);
         assert_eq!(opts.resolver, config.resolver);
     }
@@ -534,37 +536,37 @@ mod tests {
     #[test]
     fn test_parse_ports_and_ranges_single_port() {
         let result = parse_ports_and_ranges("80");
-        assert_eq!(result, Ok(vec![80]));
+        assert_eq!(result, Ok(vec![80].into()));
     }
 
     #[test]
     fn test_parse_ports_and_ranges_multiple_ports() {
         let result = parse_ports_and_ranges("80,443,8080");
-        assert_eq!(result, Ok(vec![80, 443, 8080]));
+        assert_eq!(result, Ok(vec![80, 443, 8080].into()));
     }
 
     #[test]
     fn test_parse_ports_and_ranges_single_range() {
         let result = parse_ports_and_ranges("1-5");
-        assert_eq!(result, Ok(vec![1, 2, 3, 4, 5]));
+        assert_eq!(result, Ok(vec![1, 2, 3, 4, 5].into()));
     }
 
     #[test]
     fn test_parse_ports_and_ranges_mixed_ports_and_ranges() {
         let result = parse_ports_and_ranges("80,443,1-3,8080");
-        assert_eq!(result, Ok(vec![1, 2, 3, 80, 443, 8080]));
+        assert_eq!(result, Ok(vec![1, 2, 3, 80, 443, 8080].into()));
     }
 
     #[test]
     fn test_parse_ports_and_ranges_with_spaces() {
         let result = parse_ports_and_ranges("80, 443, 1-3, 8080");
-        assert_eq!(result, Ok(vec![1, 2, 3, 80, 443, 8080]));
+        assert_eq!(result, Ok(vec![1, 2, 3, 80, 443, 8080].into()));
     }
 
     #[test]
     fn test_parse_ports_and_ranges_duplicates() {
         let result = parse_ports_and_ranges("80,443,80,443");
-        assert_eq!(result, Ok(vec![80, 443]));
+        assert_eq!(result, Ok(vec![80, 443].into()));
     }
 
     #[test]
@@ -642,7 +644,7 @@ mod tests {
         let result = parse_ports_and_ranges("1,80,443,1-5,8080,9090,10-12");
         assert_eq!(
             result,
-            Ok(vec![1, 2, 3, 4, 5, 10, 11, 12, 80, 443, 8080, 9090])
+            Ok(vec![1, 2, 3, 4, 5, 10, 11, 12, 80, 443, 8080, 9090].into())
         );
     }
 }
