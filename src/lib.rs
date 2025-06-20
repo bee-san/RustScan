@@ -11,17 +11,14 @@
 //! use async_std::task::block_on;
 //! use std::{net::IpAddr, time::Duration};
 //!
-//! use rustscan::input::{PortRange, ScanOrder};
+//! use rustscan::input::ScanOrder;
 //! use rustscan::port_strategy::PortStrategy;
 //! use rustscan::scanner::Scanner;
 //!
 //! fn main() {
 //!     let addrs = vec!["127.0.0.1".parse::<IpAddr>().unwrap()];
-//!     let range = PortRange {
-//!         start: 1,
-//!         end: 1_000,
-//!     };
-//!     let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random); // can be serial, random or manual https://github.com/RustScan/RustScan/blob/master/src/port_strategy/mod.rs
+//!     let range = (1..=1000).collect::<Vec<u16>>();
+//!     let strategy = PortStrategy::pick(Some(range), ScanOrder::Random); // can be serial, random or manual https://github.com/RustScan/RustScan/blob/master/src/port_strategy/mod.rs
 //!     let scanner = Scanner::new(
 //!         &addrs, // the addresses to scan
 //!         10, // batch_size is how many ports at a time should be scanned
