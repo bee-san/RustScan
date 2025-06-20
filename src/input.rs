@@ -332,7 +332,7 @@ impl Opts {
 
         // Only use top ports when the user asks for them
         if self.top {
-            self.ports = Some(TOP_1000_PORTS.clone())
+            self.ports = Some((*TOP_1000_PORTS).clone());
         } else if config.ports.is_some() {
             self.ports = config.ports.clone();
         }
