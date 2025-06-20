@@ -1,7 +1,6 @@
 //! Provides a means to read, parse and hold configuration options for scans.
 use clap::{Parser, ValueEnum};
 use serde_derive::Deserialize;
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -28,35 +27,83 @@ pub enum ScriptsRequired {
     Custom,
 }
 
-/// Represents the range of ports to be scanned.
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct PortRange {
-    pub start: u16,
-    pub end: u16,
+#[cfg(not(tarpaulin_include))]
+pub fn parse_ports_and_ranges(input: &str) -> Result<Vec<u16>, String> {
+    let mut ports = Vec::new();
+
+    for part in input.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+
+        if part.contains('-') {
+            let range_ports = parse_port_range(part)?;
+            ports.extend(range_ports);
+        } else {
+            let port = parse_single_port(part)?;
+            ports.push(port);
+        }
+    }
+
+    if ports.is_empty() {
+        return Err("No valid ports or ranges provided".to_string());
+    }
+
+    ports.sort_unstable();
+    ports.dedup();
+
+    Ok(ports)
 }
 
-#[cfg(not(tarpaulin_include))]
-fn parse_range(input: &str) -> Result<PortRange, String> {
-    let range = input
-        .split('-')
-        .map(str::parse)
-        .collect::<Result<Vec<u16>, std::num::ParseIntError>>();
-
-    if range.is_err() {
-        return Err(String::from(
-            "the range format must be 'start-end'. Example: 1-1000.",
+fn parse_port_range(range_str: &str) -> Result<Vec<u16>, String> {
+    let range_parts: Vec<&str> = range_str.split('-').collect();
+    if range_parts.len() != 2 {
+        return Err(format!(
+            "Invalid range format '{range_str}'. Expected 'start-end'. Example: 1-1000.",
         ));
     }
 
-    match range.unwrap().as_slice() {
-        [start, end] => Ok(PortRange {
-            start: *start,
-            end: *end,
-        }),
-        _ => Err(String::from(
-            "the range format must be 'start-end'. Example: 1-1000.",
-        )),
+    let start: u16 = range_parts[0].parse().map_err(|_| {
+        format!(
+            "Invalid start port '{}' in range '{range_str}'",
+            range_parts[0]
+        )
+    })?;
+    let end: u16 = range_parts[1].parse().map_err(|_| {
+        format!(
+            "Invalid end port '{}' in range '{range_str}'",
+            range_parts[1]
+        )
+    })?;
+
+    if start > end {
+        return Err(format!(
+            "Start port {start} is greater than end port {end} in range '{range_str}'",
+        ));
     }
+
+    if start < LOWEST_PORT_NUMBER {
+        return Err(format!(
+            "Ports in range '{range_str}' must be between {LOWEST_PORT_NUMBER} and {TOP_PORT_NUMBER}",
+        ));
+    }
+
+    Ok((start..=end).collect())
+}
+
+fn parse_single_port(port_str: &str) -> Result<u16, String> {
+    let port: u16 = port_str
+        .parse()
+        .map_err(|_| format!("Invalid port number '{port_str}'"))?;
+
+    if port < LOWEST_PORT_NUMBER {
+        return Err(format!(
+            "Port {port} must be between {LOWEST_PORT_NUMBER} and {TOP_PORT_NUMBER}",
+        ));
+    }
+
+    Ok(port)
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -77,13 +124,9 @@ pub struct Opts {
     #[arg(short, long, value_delimiter = ',')]
     pub addresses: Vec<String>,
 
-    /// A list of comma separated ports to be scanned. Example: 80,443,8080.
-    #[arg(short, long, value_delimiter = ',')]
+    /// A list of ports and/or port ranges to be scanned. Examples: 80,443,8080 or 1-1000 or 1-1000,8080
+    #[arg(short, long, alias = "range", value_parser = parse_ports_and_ranges)]
     pub ports: Option<Vec<u16>>,
-
-    /// A range of ports with format start-end. Example: 1-1000.
-    #[arg(short, long, conflicts_with = "ports", value_parser = parse_range)]
-    pub range: Option<PortRange>,
 
     /// Whether to ignore the configuration file or not.
     #[arg(short, long)]
@@ -169,11 +212,8 @@ impl Opts {
     pub fn read() -> Self {
         let mut opts = Opts::parse();
 
-        if opts.ports.is_none() && opts.range.is_none() {
-            opts.range = Some(PortRange {
-                start: LOWEST_PORT_NUMBER,
-                end: TOP_PORT_NUMBER,
-            });
+        if opts.ports.is_none() {
+            opts.ports = Some((LOWEST_PORT_NUMBER..=TOP_PORT_NUMBER).collect());
         }
 
         opts
@@ -218,14 +258,10 @@ impl Opts {
 
         // Only use top ports when the user asks for them
         if self.top && config.ports.is_some() {
-            let mut ports: Vec<u16> = Vec::with_capacity(config.ports.as_ref().unwrap().len());
-            for entry in config.ports.as_ref().unwrap().keys() {
-                ports.push(entry.parse().unwrap());
-            }
-            self.ports = Some(ports);
+            self.ports = config.ports.clone();
         }
 
-        merge_optional!(range, resolver, ulimit, exclude_ports, exclude_addresses);
+        merge_optional!(resolver, ulimit, exclude_ports, exclude_addresses);
     }
 }
 
@@ -234,7 +270,6 @@ impl Default for Opts {
         Self {
             addresses: vec![],
             ports: None,
-            range: None,
             greppable: true,
             batch_size: 0,
             timeout: 0,
@@ -263,8 +298,7 @@ impl Default for Opts {
 #[derive(Debug, Deserialize)]
 pub struct Config {
     addresses: Option<Vec<String>>,
-    ports: Option<HashMap<String, u16>>,
-    range: Option<PortRange>,
+    ports: Option<Vec<u16>>,
     greppable: Option<bool>,
     accessible: Option<bool>,
     batch_size: Option<u16>,
@@ -332,14 +366,13 @@ mod tests {
     use clap::{CommandFactory, Parser};
     use parameterized::parameterized;
 
-    use super::{Config, Opts, PortRange, ScanOrder, ScriptsRequired};
+    use super::{parse_ports_and_ranges, Config, Opts, ScanOrder, ScriptsRequired};
 
     impl Config {
         fn default() -> Self {
             Self {
                 addresses: Some(vec!["127.0.0.1".to_owned()]),
                 ports: None,
-                range: None,
                 greppable: Some(true),
                 batch_size: Some(25_000),
                 timeout: Some(1_000),
@@ -417,17 +450,129 @@ mod tests {
     fn opts_merge_optional_arguments() {
         let mut opts = Opts::default();
         let mut config = Config::default();
-        config.range = Some(PortRange {
-            start: 1,
-            end: 1_000,
-        });
+        config.ports = Some((1..=1000).collect::<Vec<u16>>());
         config.ulimit = Some(1_000);
         config.resolver = Some("1.1.1.1".to_owned());
 
         opts.merge_optional(&config);
 
-        assert_eq!(opts.range, config.range);
+        assert_eq!(opts.ports, Some((1..=1000).collect::<Vec<u16>>()));
         assert_eq!(opts.ulimit, config.ulimit);
         assert_eq!(opts.resolver, config.resolver);
+    }
+
+    #[test]
+    fn test_parse_ports_and_ranges_single_port() {
+        let result = parse_ports_and_ranges("80");
+        assert_eq!(result, Ok(vec![80]));
+    }
+
+    #[test]
+    fn test_parse_ports_and_ranges_multiple_ports() {
+        let result = parse_ports_and_ranges("80,443,8080");
+        assert_eq!(result, Ok(vec![80, 443, 8080]));
+    }
+
+    #[test]
+    fn test_parse_ports_and_ranges_single_range() {
+        let result = parse_ports_and_ranges("1-5");
+        assert_eq!(result, Ok(vec![1, 2, 3, 4, 5]));
+    }
+
+    #[test]
+    fn test_parse_ports_and_ranges_mixed_ports_and_ranges() {
+        let result = parse_ports_and_ranges("80,443,1-3,8080");
+        assert_eq!(result, Ok(vec![1, 2, 3, 80, 443, 8080]));
+    }
+
+    #[test]
+    fn test_parse_ports_and_ranges_with_spaces() {
+        let result = parse_ports_and_ranges("80, 443, 1-3, 8080");
+        assert_eq!(result, Ok(vec![1, 2, 3, 80, 443, 8080]));
+    }
+
+    #[test]
+    fn test_parse_ports_and_ranges_duplicates() {
+        let result = parse_ports_and_ranges("80,443,80,443");
+        assert_eq!(result, Ok(vec![80, 443]));
+    }
+
+    #[test]
+    fn test_parse_ports_and_ranges_empty_input() {
+        let result = parse_ports_and_ranges("");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("No valid ports or ranges provided"));
+    }
+
+    #[test]
+    fn test_parse_ports_and_ranges_invalid_port() {
+        let result = parse_ports_and_ranges("80,abc,443");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid port number 'abc'"));
+    }
+
+    #[test]
+    fn test_parse_ports_and_ranges_invalid_range() {
+        let result = parse_ports_and_ranges("80,1-abc,443");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Invalid end port 'abc' in range '1-abc'"));
+    }
+
+    #[test]
+    fn test_parse_ports_and_ranges_invalid_range_format() {
+        let result = parse_ports_and_ranges("80,1-2-3,443");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Invalid range format '1-2-3'. Expected 'start-end'"));
+    }
+
+    #[test]
+    fn test_parse_ports_and_ranges_reverse_range() {
+        let result = parse_ports_and_ranges("80,5-1,443");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Start port 5 is greater than end port 1 in range '5-1'"));
+    }
+
+    #[test]
+    fn test_parse_ports_and_ranges_out_of_bounds_port() {
+        let result = parse_ports_and_ranges("80,70000,443");
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err();
+        println!("Actual error message: {}", error_msg);
+        assert!(error_msg.contains("Invalid port number '70000'"));
+    }
+
+    #[test]
+    fn test_parse_ports_and_ranges_out_of_bounds_range() {
+        let result = parse_ports_and_ranges("80,1-70000,443");
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err();
+        println!("Actual error message: {}", error_msg);
+        assert!(error_msg.contains("Invalid end port '70000' in range '1-70000'"));
+    }
+
+    #[test]
+    fn test_parse_ports_and_ranges_zero_port() {
+        let result = parse_ports_and_ranges("80,0,443");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Port 0 must be between 1 and 65535"));
+    }
+
+    #[test]
+    fn test_parse_ports_and_ranges_complex_mixed() {
+        let result = parse_ports_and_ranges("1,80,443,1-5,8080,9090,10-12");
+        assert_eq!(
+            result,
+            Ok(vec![1, 2, 3, 4, 5, 10, 11, 12, 80, 443, 8080, 9090])
+        );
     }
 }
