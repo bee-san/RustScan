@@ -122,7 +122,7 @@ RustScan has continuous integration testing that aims to ensure it is accessible
 
 # 🤸 Usage
 
-We have 2 usage guides. [Basic Usage][usage-1] and [Things you may want to do][usage-2].
+We have two usage guides. [Basic Usage][usage-1] and [Things you may want to do][usage-2].
 
 We also have documentation about our config file [here][config-file-here].
 

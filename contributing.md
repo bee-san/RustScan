@@ -1,4 +1,4 @@
-Howdy Space Cow-Person 🤠🌌
+Howdy, Space Cow-Person 🤠🌌
 
 RustScan is always looking for contributors. Whether that's spelling mistakes or major changes, your help is **wanted** and welcomed here.
 
@@ -25,7 +25,7 @@ The flow for contributing to open source software is:
 
 And then comment on the issue that you've done.
 
-RustScan also has some `// TODO`'s in the codebase, which are meant more for the core team but we wouldn't say no to help with these issues.
+RustScan also has some `// TODO`'s in the codebase, which are meant more for the core team but we would welcome help with these issues.
 
 If you have any feature suggestions or bugs, leave a GitHub issue. We welcome any and all support :D
 
