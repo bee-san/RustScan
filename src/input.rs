@@ -522,13 +522,13 @@ mod tests {
     fn opts_merge_optional_arguments() {
         let mut opts = Opts::default();
         let mut config = Config::default();
-        config.ports = Some((1..=1000).collect::<Vec<u16>>().into());
+        config.ports = Some((1..=1000).collect::<Vec<u16>>());
         config.ulimit = Some(1_000);
         config.resolver = Some("1.1.1.1".to_owned());
 
         opts.merge_optional(&config);
 
-        assert_eq!(opts.ports, Some((1..=1000).collect::<Vec<u16>>().into()));
+        assert_eq!(opts.ports, Some((1..=1000).collect::<Vec<u16>>()));
         assert_eq!(opts.ulimit, config.ulimit);
         assert_eq!(opts.resolver, config.resolver);
     }
@@ -536,37 +536,37 @@ mod tests {
     #[test]
     fn test_parse_ports_and_ranges_single_port() {
         let result = parse_ports_and_ranges("80");
-        assert_eq!(result, Ok(vec![80].into()));
+        assert_eq!(result, Ok(vec![80]));
     }
 
     #[test]
     fn test_parse_ports_and_ranges_multiple_ports() {
         let result = parse_ports_and_ranges("80,443,8080");
-        assert_eq!(result, Ok(vec![80, 443, 8080].into()));
+        assert_eq!(result, Ok(vec![80, 443, 8080]));
     }
 
     #[test]
     fn test_parse_ports_and_ranges_single_range() {
         let result = parse_ports_and_ranges("1-5");
-        assert_eq!(result, Ok(vec![1, 2, 3, 4, 5].into()));
+        assert_eq!(result, Ok(vec![1, 2, 3, 4, 5]));
     }
 
     #[test]
     fn test_parse_ports_and_ranges_mixed_ports_and_ranges() {
         let result = parse_ports_and_ranges("80,443,1-3,8080");
-        assert_eq!(result, Ok(vec![1, 2, 3, 80, 443, 8080].into()));
+        assert_eq!(result, Ok(vec![1, 2, 3, 80, 443, 8080]));
     }
 
     #[test]
     fn test_parse_ports_and_ranges_with_spaces() {
         let result = parse_ports_and_ranges("80, 443, 1-3, 8080");
-        assert_eq!(result, Ok(vec![1, 2, 3, 80, 443, 8080].into()));
+        assert_eq!(result, Ok(vec![1, 2, 3, 80, 443, 8080]));
     }
 
     #[test]
     fn test_parse_ports_and_ranges_duplicates() {
         let result = parse_ports_and_ranges("80,443,80,443");
-        assert_eq!(result, Ok(vec![80, 443].into()));
+        assert_eq!(result, Ok(vec![80, 443]));
     }
 
     #[test]
@@ -644,7 +644,7 @@ mod tests {
         let result = parse_ports_and_ranges("1,80,443,1-5,8080,9090,10-12");
         assert_eq!(
             result,
-            Ok(vec![1, 2, 3, 4, 5, 10, 11, 12, 80, 443, 8080, 9090].into())
+            Ok(vec![1, 2, 3, 4, 5, 10, 11, 12, 80, 443, 8080, 9090])
         );
     }
 }
