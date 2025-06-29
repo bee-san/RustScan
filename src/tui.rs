@@ -43,7 +43,7 @@ macro_rules! output {
     ($name:expr) => {
         println!(
             "{} {}",
-            Ransi_term::Colour::RGB(0, 255, 9).bold().paint("[>]"),
+            RGansi_term::Colour::RGB(0, 255, 9).bold().paint("[>]"),
             $name
         );
     };
