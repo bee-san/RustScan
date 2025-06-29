@@ -43,6 +43,12 @@ Arch:
   yay rustscan
 ```
 
+x-cmd:
+
+```
+  x env use rustscan
+```
+
 # ✨ Features
 
 - Scans all 65k ports in **3 seconds**.
