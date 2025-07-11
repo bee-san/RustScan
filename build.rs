@@ -194,7 +194,8 @@ fn parser(payload: &str) -> Vec<u8> {
     for (idx, char) in payload.chars().enumerate() {
         if char == '\\' && payload.chars().nth(idx + 1) == Some('x') {
             continue;
-        } else if char.is_ascii_hexdigit() {
+        }
+        if char.is_ascii_hexdigit() {
             tmp_str.push(char);
             if tmp_str.len() == 2 {
                 bytes.push(u8::from_str_radix(&tmp_str, 16).unwrap());
