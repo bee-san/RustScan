@@ -5,6 +5,44 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputFormat {
+    Normal,
+    Json,
+    Xml,
+}
+
+impl std::str::FromStr for OutputFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "normal" => Ok(OutputFormat::Normal),
+            "json" => Ok(OutputFormat::Json),
+            "xml" => Ok(OutputFormat::Xml),
+            _ => Err(format!(
+                "Invalid output format: {s}. Valid formats are: normal, json, xml"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for OutputFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OutputFormat::Normal => write!(f, "normal"),
+            OutputFormat::Json => write!(f, "json"),
+            OutputFormat::Xml => write!(f, "xml"),
+        }
+    }
+}
+
+impl Default for OutputFormat {
+    fn default() -> Self {
+        OutputFormat::Normal
+    }
+}
+
 const LOWEST_PORT_NUMBER: u16 = 1;
 const TOP_PORT_NUMBER: u16 = 65535;
 
@@ -162,6 +200,10 @@ pub struct Opts {
     /// UDP scanning mode, finds UDP ports that send back responses
     #[arg(long)]
     pub udp: bool,
+
+    /// Output format for results
+    #[arg(short = 'f', long, default_value = "normal")]
+    pub output_format: OutputFormat,
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -252,6 +294,7 @@ impl Default for Opts {
             exclude_ports: None,
             exclude_addresses: None,
             udp: false,
+            output_format: OutputFormat::default(),
         }
     }
 }

@@ -33,43 +33,64 @@ use crate::warning;
 pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
     let mut ips: Vec<IpAddr> = Vec::new();
     let mut unresolved_addresses: Vec<&str> = Vec::new();
-    let backup_resolver = get_resolver(&input.resolver);
 
+    // First pass: try to parse as IP addresses or CIDR without DNS resolution
     for address in &input.addresses {
-        let parsed_ips = parse_address(address, &backup_resolver);
-        if !parsed_ips.is_empty() {
-            ips.extend(parsed_ips);
+        if let Ok(addr) = IpAddr::from_str(address) {
+            ips.push(addr);
+        } else if let Ok(net_addr) = IpInet::from_str(address) {
+            ips.extend(
+                net_addr
+                    .network()
+                    .into_iter()
+                    .addresses()
+                    .collect::<Vec<_>>(),
+            );
         } else {
             unresolved_addresses.push(address);
         }
     }
 
-    // If we got to this point this can only be a file path or the wrong input.
-    for file_path in unresolved_addresses {
-        let file_path = Path::new(file_path);
+    // Only create resolver if we have unresolved addresses
+    if !unresolved_addresses.is_empty() {
+        let backup_resolver = get_resolver(&input.resolver);
 
-        if !file_path.is_file() {
-            warning!(
-                format!("Host {file_path:?} could not be resolved."),
-                input.greppable,
-                input.accessible
-            );
+        for address in unresolved_addresses {
+            let parsed_ips = parse_address(address, &backup_resolver);
+            if !parsed_ips.is_empty() {
+                ips.extend(parsed_ips);
+            } else {
+                // If we got to this point this can only be a file path or the wrong input.
+                let file_path = Path::new(address);
 
-            continue;
-        }
+                if !file_path.is_file() {
+                    warning!(
+                        format!("Host {file_path:?} could not be resolved."),
+                        input.greppable,
+                        input.accessible
+                    );
+                    continue;
+                }
 
-        if let Ok(x) = read_ips_from_file(file_path, &backup_resolver) {
-            ips.extend(x);
-        } else {
-            warning!(
-                format!("Host {file_path:?} could not be resolved."),
-                input.greppable,
-                input.accessible
-            );
+                if let Ok(x) = read_ips_from_file(file_path, &backup_resolver) {
+                    ips.extend(x);
+                } else {
+                    warning!(
+                        format!("Host {file_path:?} could not be resolved."),
+                        input.greppable,
+                        input.accessible
+                    );
+                }
+            }
         }
     }
 
-    let excluded_cidrs = parse_excluded_networks(&input.exclude_addresses, &backup_resolver);
+    let excluded_cidrs = if input.exclude_addresses.is_some() {
+        let backup_resolver = get_resolver(&input.resolver);
+        parse_excluded_networks(&input.exclude_addresses, &backup_resolver)
+    } else {
+        Vec::new()
+    };
 
     // Remove duplicated/excluded IPs.
     let mut seen = BTreeSet::new();
