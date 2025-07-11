@@ -1,0 +1,252 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., v2.4.1)'
+        required: true
+        default: 'v2.4.1'
+
+jobs:
+  build:
+    name: Build for ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          # Windows
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            name: rustscan-windows-x64.exe
+            
+          # macOS
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            name: rustscan-macos-x64
+            
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            name: rustscan-macos-arm64
+            
+          # Linux
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: rustscan-linux-x64
+            
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: rustscan-linux-arm64
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Install cross-compilation tools (Linux ARM64)
+      if: matrix.target == 'aarch64-unknown-linux-gnu'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo index
+      uses: actions/cache@v3
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo build
+      uses: actions/cache@v3
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Build binary
+      run: |
+        cargo build --release --target ${{ matrix.target }}
+
+    - name: Prepare artifacts
+      shell: bash
+      run: |
+        mkdir -p artifacts
+        
+        if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+          cp target/${{ matrix.target }}/release/rustscan.exe artifacts/${{ matrix.name }}
+        else
+          cp target/${{ matrix.target }}/release/rustscan artifacts/${{ matrix.name }}
+        fi
+        
+        # Copy additional files
+        cp README.md artifacts/
+        cp LICENSE artifacts/
+        cp config.toml artifacts/
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: ${{ matrix.target }}
+        path: artifacts/
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+      with:
+        path: artifacts
+
+    - name: Prepare release assets
+      run: |
+        mkdir -p release-assets
+        
+        # Create packages for each target
+        for target_dir in artifacts/*/; do
+          target=$(basename "$target_dir")
+          
+          cd "$target_dir"
+          
+          # Create installation scripts
+          cat > install.sh << 'EOF'
+        #!/bin/bash
+        set -e
+        
+        echo "🦀 RustScan Installation Script"
+        echo "=============================="
+        
+        # Detect binary name
+        if [[ -f "rustscan.exe" ]]; then
+          BINARY="rustscan.exe"
+          echo "Installing for Windows..."
+          
+          # For Windows, just copy to current directory
+          echo "✅ RustScan installed in current directory"
+          echo "Add current directory to PATH to use rustscan globally"
+        else
+          BINARY="rustscan"
+          echo "Installing for Unix-like system..."
+          
+          # For Unix-like systems
+          sudo mkdir -p /usr/local/bin
+          sudo cp "$BINARY" /usr/local/bin/
+          sudo chmod +x "/usr/local/bin/$BINARY"
+          
+          echo "✅ RustScan installed to /usr/local/bin/"
+        fi
+        
+        # Copy config file
+        if [[ ! -f "$HOME/.rustscan.toml" ]] && [[ -f "config.toml" ]]; then
+          cp config.toml "$HOME/.rustscan.toml"
+          echo "✅ Configuration file installed to ~/.rustscan.toml"
+        fi
+        
+        echo ""
+        echo "🚀 You can now use RustScan:"
+        echo "   rustscan -a 192.168.1.1 -r 1-1000"
+        EOF
+          
+          chmod +x install.sh
+          
+          # Create package
+          if [[ "$target" == *"windows"* ]]; then
+            zip -r "../../release-assets/rustscan-${target}.zip" .
+          else
+            tar -czf "../../release-assets/rustscan-${target}.tar.gz" .
+          fi
+          
+          cd ../../
+        done
+
+    - name: Generate checksums
+      run: |
+        cd release-assets
+        sha256sum * > SHA256SUMS
+
+    - name: Get version
+      id: get_version
+      run: |
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+        else
+          echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.get_version.outputs.version }}
+        name: "RustScan ${{ steps.get_version.outputs.version }}"
+        body: |
+          ## RustScan ${{ steps.get_version.outputs.version }}
+          
+          ### 🚀 Features
+          - Fast port scanning with progress bars
+          - Fixed DNS resolution issues  
+          - Improved error handling
+          - CIDR network support
+          - Multiple output formats
+          - Configurable scan parameters
+          
+          ### 📦 Downloads
+          
+          Choose the appropriate package for your system:
+          
+          | Platform | Architecture | Download |
+          |----------|-------------|----------|
+          | Windows | x64 | `rustscan-x86_64-pc-windows-msvc.zip` |
+          | macOS | Intel (x64) | `rustscan-x86_64-apple-darwin.tar.gz` |
+          | macOS | Apple Silicon (ARM64) | `rustscan-aarch64-apple-darwin.tar.gz` |
+          | Linux | x64 | `rustscan-x86_64-unknown-linux-gnu.tar.gz` |
+          | Linux | ARM64 | `rustscan-aarch64-unknown-linux-gnu.tar.gz` |
+          
+          ### 🔧 Installation
+          
+          1. Download the appropriate package for your system
+          2. Extract the archive
+          3. Run the installation script: `./install.sh`
+          
+          ### 🔐 Verification
+          
+          All packages can be verified using the provided `SHA256SUMS` file.
+          
+          ### 📚 Usage
+          
+          ```bash
+          # Scan a single host
+          rustscan -a 192.168.1.1 -r 1-1000
+          
+          # Scan a network with progress bar
+          rustscan -a 192.168.1.1/24 -r 1-65535
+          
+          # Quick scan with custom settings
+          rustscan -a 192.168.1.1 -r 1-1000 -b 1000 -t 2000
+          ```
+          
+          ---
+          
+          🤖 *This release was automatically built with GitHub Actions*
+        files: |
+          release-assets/*
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
