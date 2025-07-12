@@ -124,3 +124,24 @@ fabric.properties
 .idea*
 
 settings.json
+.DS_Store
+
+# Additional ignore rules for this project
+# Distribution/packaging files (use GitHub Releases instead)
+/dist/
+# Backup files
+*.backup
+*.bak
+# Temporary files
+*.tmp
+*.temp
+# Log files
+*.log
+# Environment files
+.env
+.env.local
+.env.*.local
+# OS generated files
+Thumbs.db
+# VS Code settings (optional - comment out if you want to share VS Code settings)
+.vscode/

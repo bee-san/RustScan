@@ -10,13 +10,76 @@ use rustscan::scripts::{init_scripts, Script, ScriptFile};
 use rustscan::{detail, funny_opening, output, warning};
 
 use colorful::{Color, Colorful};
-use futures::executor::block_on;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::string::ToString;
 use std::time::Duration;
+use tracing::{debug, info, instrument};
 
 use rustscan::address::parse_addresses;
+use rustscan::input::OutputFormat;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ScanResult {
+    ip: String,
+    ports: Vec<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ScanReport {
+    version: String,
+    scan_time: String,
+    results: Vec<ScanResult>,
+}
+
+fn output_results(
+    ports_per_ip: &HashMap<IpAddr, Vec<u16>>,
+    format: &OutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match format {
+        OutputFormat::Normal => {
+            // Normal output is handled in the main loop
+            Ok(())
+        }
+        OutputFormat::Json => {
+            let results: Vec<ScanResult> = ports_per_ip
+                .iter()
+                .map(|(ip, ports)| ScanResult {
+                    ip: ip.to_string(),
+                    ports: ports.clone(),
+                })
+                .collect();
+
+            let report = ScanReport {
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                scan_time: chrono::Utc::now().to_rfc3339(),
+                results,
+            };
+
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
+        OutputFormat::Xml => {
+            let results: Vec<ScanResult> = ports_per_ip
+                .iter()
+                .map(|(ip, ports)| ScanResult {
+                    ip: ip.to_string(),
+                    ports: ports.clone(),
+                })
+                .collect();
+
+            let report = ScanReport {
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                scan_time: chrono::Utc::now().to_rfc3339(),
+                results,
+            };
+
+            println!("{}", quick_xml::se::to_string(&report)?);
+            Ok(())
+        }
+    }
+}
 
 extern crate colorful;
 extern crate dirs;
@@ -27,18 +90,21 @@ const DEFAULT_FILE_DESCRIPTORS_LIMIT: u64 = 8000;
 // Safest batch size based on experimentation
 const AVERAGE_BATCH_SIZE: u16 = 3000;
 
-#[macro_use]
-extern crate log;
-
 #[cfg(not(tarpaulin_include))]
 #[allow(clippy::too_many_lines)]
-/// Faster Nmap scanning with Rust
-/// If you're looking for the actual scanning, check out the module Scanner
-fn main() {
+#[tokio::main]
+#[instrument]
+async fn main() {
     #[cfg(not(unix))]
     let _ = ansi_term::enable_ansi_support();
 
-    env_logger::init();
+    // Initialize tracing subscriber for structured logging
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
     let mut benchmarks = Benchmark::init();
     let mut rustscan_bench = NamedTimer::start("RustScan");
 
@@ -93,11 +159,12 @@ fn main() {
         opts.accessible,
         opts.exclude_ports.unwrap_or_default(),
         opts.udp,
+        true, // Enable progress bar by default
     );
     debug!("Scanner finished building: {scanner:?}");
 
     let mut portscan_bench = NamedTimer::start("Portscan");
-    let scan_result = block_on(scanner.run());
+    let scan_result = scanner.run().await;
     portscan_bench.end();
     benchmarks.push(portscan_bench);
 
@@ -136,7 +203,9 @@ fn main() {
 
         // if option scripts is none, no script will be spawned
         if opts.greppable || opts.scripts == ScriptsRequired::None {
-            println!("{} -> [{}]", &ip, ports_str);
+            if matches!(opts.output_format, OutputFormat::Normal) {
+                println!("{} -> [{}]", &ip, ports_str);
+            }
             continue;
         }
         detail!("Starting Script(s)", opts.greppable, opts.accessible);
@@ -182,13 +251,20 @@ fn main() {
         }
     }
 
-    // To use the runtime benchmark, run the process as: RUST_LOG=info ./rustscan
     script_bench.end();
     benchmarks.push(script_bench);
     rustscan_bench.end();
     benchmarks.push(rustscan_bench);
     debug!("Benchmarks raw {benchmarks:?}");
     info!("{}", benchmarks.summary());
+
+    // Handle different output formats
+    if matches!(opts.output_format, OutputFormat::Json | OutputFormat::Xml) {
+        if let Err(e) = output_results(&ports_per_ip, &opts.output_format) {
+            eprintln!("Error formatting output: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
 /// Prints the opening title of RustScan

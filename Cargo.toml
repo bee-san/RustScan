@@ -19,11 +19,17 @@ exclude = [
 [dependencies]
 clap = { version = "4.5.41", features = ["derive", "wrap_help"] }
 colored = "3.0.0"
-async-std = "1.13.1"
+tokio = { version = "1.42", features = ["full"] }
 futures = "0.3"
 rlimit = "0.10.2"
 log = "0.4.27"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 env_logger = "0.11.8"
+indicatif = "0.17"
+serde_json = "1.0"
+quick-xml = { version = "0.37", features = ["serialize"] }
+chrono = { version = "0.4", features = ["serde"] }
 anstream = "=0.6.19"
 dirs = "6.0.0"
 gcd = "2.0.1"
@@ -53,6 +59,8 @@ section = "rust"
 lto = true
 panic = 'abort'
 strip = true
+codegen-units = 1
+opt-level = 3
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [[bin]]
@@ -61,6 +69,28 @@ path = "src/main.rs"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tarpaulin_include)"] }
+
+[lints.clippy]
+# Pedantic rules for high code quality
+pedantic = { level = "warn", priority = -1 }
+# Additional rules for better code
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+# Performance lints
+perf = { level = "warn", priority = -1 }
+# Style improvements
+style = { level = "warn", priority = -1 }
+# Suspicious patterns
+suspicious = { level = "warn", priority = -1 }
+# Complexity warnings
+complexity = { level = "warn", priority = -1 }
+# Correctness (these are deny by default but let's be explicit)
+correctness = { level = "deny", priority = -1 }
+
+# Allow some pedantic lints that might be too noisy
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
 
 [[bench]]
 name = "benchmark_portscan"

@@ -8,14 +8,14 @@
 //! [`PortStrategy`](crate::port_strategy::PortStrategy):
 //!
 //! ```rust
-//! use async_std::task::block_on;
 //! use std::{net::IpAddr, time::Duration};
 //!
 //! use rustscan::input::{PortRange, ScanOrder};
 //! use rustscan::port_strategy::PortStrategy;
 //! use rustscan::scanner::Scanner;
 //!
-//! fn main() {
+//! #[tokio::main]
+//! async fn main() {
 //!     let addrs = vec!["127.0.0.1".parse::<IpAddr>().unwrap()];
 //!     let range = PortRange {
 //!         start: 1,
@@ -32,9 +32,10 @@
 //!         true, // accessible, should the output be A11Y compliant?
 //!         vec![9000], // What ports should RustScan exclude?
 //!         false, // is this a UDP scan?
+//!         true, // show progress bar
 //!     );
 //!
-//!     let scan_result = block_on(scanner.run());
+//!     let scan_result = scanner.run().await;
 //!
 //!     println!("{:?}", scan_result);
 //! }
