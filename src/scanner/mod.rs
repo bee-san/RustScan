@@ -223,7 +223,7 @@ impl Scanner {
         for _ in 1..=tries {
             match self.udp_scan(socket, &payload, self.timeout).await {
                 Ok(true) => return Ok(socket),
-                Ok(false) => continue,
+                Ok(false) => {}
                 Err(e) => return Err(e),
             }
         }

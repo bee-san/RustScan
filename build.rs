@@ -24,7 +24,7 @@ pub fn main() {
     let mut capturing = false;
     let mut curr = String::new();
 
-    for line in data.trim().split('\n') {
+    for line in data.lines() {
         if line.contains('#') || line.is_empty() {
             continue;
         }
@@ -48,7 +48,7 @@ pub fn main() {
 
     let pb_linenr = ports_v(&fp_map);
     let payb_linenr = payloads_v(&fp_map);
-    let map = port_payload_map(pb_linenr, payb_linenr);
+    let map = port_payload_map(pb_linenr, &payb_linenr);
 
     generate_code(map);
 }
@@ -57,7 +57,7 @@ pub fn main() {
 ///
 /// # Arguments
 ///
-/// * `port_payload_map` - A BTreeMap mapping port numbers to payload data
+/// * `port_payload_map` - A `BTreeMap` mapping port numbers to payload data
 fn generate_code(port_payload_map: BTreeMap<Vec<u16>, Vec<u8>>) {
     let dest_path = PathBuf::from("src/generated.rs");
 
@@ -108,15 +108,15 @@ fn generate_code(port_payload_map: BTreeMap<Vec<u16>, Vec<u8>>) {
         .expect("Failed to execute cargo fmt");
 }
 
-/// Creates a BTreeMap of line numbers mapped to a Vec<u16> of ports
+/// Creates a `BTreeMap` of line numbers mapped to a Vec<u16> of ports
 ///
 /// # Arguments
 ///
-/// * `fp_map` - A BTreeMap containing the parsed file data
+/// * `fp_map` - A `BTreeMap` containing the parsed file data
 ///
 /// # Returns
 ///
-/// A BTreeMap where keys are line numbers and values are vectors of ports
+/// A `BTreeMap` where keys are line numbers and values are vectors of ports
 fn ports_v(fp_map: &BTreeMap<i32, String>) -> BTreeMap<i32, Vec<u16>> {
     let mut pb_linenr: BTreeMap<i32, Vec<u16>> = BTreeMap::new();
     let mut port_list: Vec<u16> = Vec::new();
@@ -154,15 +154,15 @@ fn ports_v(fp_map: &BTreeMap<i32, String>) -> BTreeMap<i32, Vec<u16>> {
     pb_linenr
 }
 
-/// Parses out the Payloads into a BTreeMap of line numbers mapped to vectors of payload bytes
+/// Parses out the Payloads into a `BTreeMap` of line numbers mapped to vectors of payload bytes
 ///
 /// # Arguments
 ///
-/// * `fp_map` - A BTreeMap containing the parsed file data
+/// * `fp_map` - A `BTreeMap` containing the parsed file data
 ///
 /// # Returns
 ///
-/// A BTreeMap where keys are line numbers and values are vectors of payload bytes
+/// A `BTreeMap` where keys are line numbers and values are vectors of payload bytes
 fn payloads_v(fp_map: &BTreeMap<i32, String>) -> BTreeMap<i32, Vec<u8>> {
     let mut payb_linenr: BTreeMap<i32, Vec<u8>> = BTreeMap::new();
 
@@ -207,26 +207,26 @@ fn parser(payload: &str) -> Vec<u8> {
     bytes
 }
 
-/// Combines the ports BTreeMap and the Payloads BTreeMap
+/// Combines the ports `BTreeMap` and the Payloads `BTreeMap`
 ///
 /// # Arguments
 ///
-/// * `pb_linenr` - A BTreeMap mapping line numbers to vectors of ports
-/// * `payb_linenr` - A BTreeMap mapping line numbers to vectors of payload bytes
+/// * `pb_linenr` - A `BTreeMap` mapping line numbers to vectors of ports
+/// * `payb_linenr` - A `BTreeMap` mapping line numbers to vectors of payload bytes
 ///
 /// # Returns
 ///
-/// A BTreeMap mapping vectors of ports to vectors of payload bytes
+/// A `BTreeMap` mapping vectors of ports to vectors of payload bytes
 fn port_payload_map(
     pb_linenr: BTreeMap<i32, Vec<u16>>,
-    payb_linenr: BTreeMap<i32, Vec<u8>>,
+    payb_linenr: &BTreeMap<i32, Vec<u8>>,
 ) -> BTreeMap<Vec<u16>, Vec<u8>> {
     let mut ppm_fin: BTreeMap<Vec<u16>, Vec<u8>> = BTreeMap::new();
 
     for (port_linenr, ports) in pb_linenr {
-        for (pay_linenr, payloads) in &payb_linenr {
+        for (pay_linenr, payloads) in payb_linenr {
             if pay_linenr == &port_linenr {
-                ppm_fin.insert(ports.to_vec(), payloads.to_vec());
+                ppm_fin.insert(ports.clone(), payloads.clone());
             }
         }
     }
