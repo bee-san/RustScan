@@ -244,14 +244,12 @@ fn adjust_ulimit_size(opts: &Opts) -> usize {
     }
 
     let (soft, _) = Resource::NOFILE.get().unwrap();
-    soft.try_into().unwrap_or_else(|_| usize::MAX)
+    soft.try_into().unwrap_or(usize::MAX)
 }
 
 #[cfg(unix)]
 fn infer_batch_size(opts: &Opts, ulimit: usize) -> usize {
-    use std::convert::TryInto;
-
-    let mut batch_size: usize = opts.batch_size;
+    let mut batch_size = opts.batch_size;
 
     // Adjust the batch size when the ulimit value is lower than the desired batch size
     if ulimit < batch_size {
@@ -262,7 +260,7 @@ fn infer_batch_size(opts: &Opts, ulimit: usize) -> usize {
         // When the OS supports high file limits like 8000, but the user
         // selected a batch size higher than this we should reduce it to
         // a lower number.
-        if ulimit < AVERAGE_BATCH_SIZE.into() {
+        if ulimit < AVERAGE_BATCH_SIZE {
             // ulimit is smaller than aveage batch size
             // user must have very small ulimit
             // decrease batch size to half of ulimit
@@ -271,7 +269,7 @@ fn infer_batch_size(opts: &Opts, ulimit: usize) -> usize {
             batch_size = ulimit / 2;
         } else if ulimit > DEFAULT_FILE_DESCRIPTORS_LIMIT {
             info!("Batch size is now average batch size");
-            batch_size = AVERAGE_BATCH_SIZE.into();
+            batch_size = AVERAGE_BATCH_SIZE;
         } else {
             batch_size = ulimit - 100;
         }
@@ -284,8 +282,6 @@ fn infer_batch_size(opts: &Opts, ulimit: usize) -> usize {
     }
 
     batch_size
-        .try_into()
-        .expect("Couldn't fit the batch size into a u16.")
 }
 
 #[cfg(test)]
