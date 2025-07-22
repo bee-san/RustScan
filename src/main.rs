@@ -23,9 +23,9 @@ extern crate dirs;
 
 // Average value for Ubuntu
 #[cfg(unix)]
-const DEFAULT_FILE_DESCRIPTORS_LIMIT: u64 = 8000;
+const DEFAULT_FILE_DESCRIPTORS_LIMIT: usize = 8000;
 // Safest batch size based on experimentation
-const AVERAGE_BATCH_SIZE: u16 = 3000;
+const AVERAGE_BATCH_SIZE: usize = 3000;
 
 #[macro_use]
 extern crate log;
@@ -78,7 +78,7 @@ fn main() {
     }
 
     #[cfg(unix)]
-    let batch_size: u16 = infer_batch_size(&opts, adjust_ulimit_size(&opts));
+    let batch_size: usize = infer_batch_size(&opts, adjust_ulimit_size(&opts));
 
     #[cfg(not(unix))]
     let batch_size: u16 = AVERAGE_BATCH_SIZE;
@@ -222,10 +222,11 @@ The Modern Day Port Scanner."#;
 }
 
 #[cfg(unix)]
-fn adjust_ulimit_size(opts: &Opts) -> u64 {
+fn adjust_ulimit_size(opts: &Opts) -> usize {
     use rlimit::Resource;
 
     if let Some(limit) = opts.ulimit {
+        let limit = limit as u64;
         if Resource::NOFILE.set(limit, limit).is_ok() {
             detail!(
                 format!("Automatically increasing ulimit value to {limit}."),
@@ -242,14 +243,14 @@ fn adjust_ulimit_size(opts: &Opts) -> u64 {
     }
 
     let (soft, _) = Resource::NOFILE.get().unwrap();
-    soft
+    soft as usize
 }
 
 #[cfg(unix)]
-fn infer_batch_size(opts: &Opts, ulimit: u64) -> u16 {
+fn infer_batch_size(opts: &Opts, ulimit: usize) -> usize {
     use std::convert::TryInto;
 
-    let mut batch_size: u64 = opts.batch_size.into();
+    let mut batch_size: usize = opts.batch_size;
 
     // Adjust the batch size when the ulimit value is lower than the desired batch size
     if ulimit < batch_size {
