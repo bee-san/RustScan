@@ -81,7 +81,7 @@ fn main() {
     let batch_size: usize = infer_batch_size(&opts, adjust_ulimit_size(&opts));
 
     #[cfg(not(unix))]
-    let batch_size: u16 = AVERAGE_BATCH_SIZE;
+    let batch_size: usize = AVERAGE_BATCH_SIZE;
 
     let scanner = Scanner::new(
         &ips,
