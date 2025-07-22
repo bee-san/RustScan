@@ -224,6 +224,7 @@ The Modern Day Port Scanner."#;
 #[cfg(unix)]
 fn adjust_ulimit_size(opts: &Opts) -> usize {
     use rlimit::Resource;
+    use std::convert::TryInto;
 
     if let Some(limit) = opts.ulimit {
         let limit = limit as u64;
@@ -243,7 +244,7 @@ fn adjust_ulimit_size(opts: &Opts) -> usize {
     }
 
     let (soft, _) = Resource::NOFILE.get().unwrap();
-    soft as usize
+    soft.try_into().unwrap_or_else(|_| usize::MAX)
 }
 
 #[cfg(unix)]
