@@ -44,7 +44,7 @@ fn run_rustscan_with_timeout(args: &[&str], timeout: Duration) {
     let end = Instant::now();
     let duration = end.saturating_duration_since(start).as_secs_f32();
 
-    println!("time: {:1.1}s", duration);
+    println!("time: {duration:1.1}s");
 }
 
 mod timelimits {
