@@ -40,7 +40,7 @@ MacOS:
 Arch:
 
 ```
-  yay rustscan
+  pacman -S rustscan
 ```
 
 # ✨ Features
@@ -55,7 +55,7 @@ Arch:
 
 |         <!--Installation Guide-->          |          <!--Documentation-->          |       <!--Discord-->        |
 | :----------------------------------------: | :------------------------------------: | :-------------------------: |
-| :book: [Installation Guide][links-table-1] | :books: [Documentation][links-table-2] | :parrot: [Discord][discord] |
+| :book: [Installation Guide][toc-install] | :books: [Documentation][links-table-2] | :parrot: [Discord][discord] |
 
 ## 🙋 Table of Contents
 
