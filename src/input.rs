@@ -315,10 +315,13 @@ impl Config {
 
 /// Constructs default path to config toml
 pub fn default_config_path() -> PathBuf {
-    let Some(mut config_path) = dirs::home_dir() else {
-        panic!("Could not infer config file path.");
+    let config_path = match std::env::var("XDG_CONFIG_HOME") {
+        Ok(path) => PathBuf::from(path).join("rustscan.toml"),
+        Err(_) => dirs::home_dir()
+            .unwrap_or_else(|| panic!("Could not infer config file path."))
+            .join(".rustscan.toml"),
     };
-    config_path.push(".rustscan.toml");
+
     config_path
 }
 
