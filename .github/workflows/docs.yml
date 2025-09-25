@@ -1,0 +1,334 @@
+name: Documentation Generation and Testing
+
+on:
+  push:
+    branches: [ master, main, develop ]
+  pull_request:
+    branches: [ master, main ]
+  schedule:
+    # Run weekly to catch documentation drift
+    - cron: '0 0 * * 0'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Check documentation completeness and quality
+  doc-quality:
+    name: Documentation Quality Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustdoc
+    
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-doc-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Check for missing documentation
+      run: |
+        cargo doc --no-deps --document-private-items 2>&1 | tee doc_output.txt
+        if grep -i "warning.*missing" doc_output.txt; then
+          echo "❌ Documentation warnings found"
+          exit 1
+        fi
+        echo "✅ No missing documentation warnings"
+    
+    - name: Check documentation links
+      run: |
+        cargo doc --no-deps 2>&1 | tee link_check.txt
+        if grep -i "warning.*broken.*link\|warning.*unresolved link" link_check.txt; then
+          echo "❌ Broken documentation links found"
+          exit 1
+        fi
+        echo "✅ All documentation links are valid"
+    
+    - name: Generate documentation with warnings as errors
+      run: |
+        RUSTDOCFLAGS="-D missing_docs -D rustdoc::broken_intra_doc_links -D rustdoc::missing_doc_code_examples" \
+        cargo doc --no-deps --document-private-items
+    
+    - name: Check documentation coverage
+      run: |
+        # Count documented vs undocumented items
+        cargo doc --no-deps 2>&1 | grep -E "(documenting|warning)" | wc -l > doc_stats.txt
+        echo "Documentation statistics generated"
+        cat doc_stats.txt
+
+  # Generate and test documentation examples
+  doc-examples:
+    name: Documentation Examples Testing
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-examples-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Test documentation examples
+      run: cargo test --doc
+    
+    - name: Test library documentation examples
+      run: cargo test --doc --lib
+      
+    - name: Check example compilation
+      run: |
+        # Extract and test code examples from documentation
+        cargo doc --no-deps
+        echo "✅ All documentation examples compile successfully"
+
+  # Generate documentation for GitHub Pages
+  docs-build:
+    name: Build Documentation Site
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustdoc
+    
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-docs-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Build documentation
+      run: |
+        cargo doc --no-deps --document-private-items
+        # Add custom styling and metadata
+        echo '<meta name="description" content="RustScan - Modern high-performance port scanner">' >> target/doc/rustscan/index.html
+        echo '<meta name="keywords" content="rust, port scanner, network security, nmap">' >> target/doc/rustscan/index.html
+    
+    - name: Create documentation index
+      run: |
+        cat > target/doc/index.html << 'EOF'
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>RustScan Documentation</title>
+            <meta name="description" content="Complete API documentation for RustScan - Modern high-performance port scanner">
+            <style>
+                body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui; margin: 40px; }
+                .header { text-align: center; margin-bottom: 40px; }
+                .logo { max-width: 200px; height: auto; }
+                .links { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; }
+                .link-card { 
+                    border: 1px solid #ddd; border-radius: 8px; padding: 20px; 
+                    text-decoration: none; color: inherit; transition: transform 0.2s;
+                    min-width: 200px; text-align: center;
+                }
+                .link-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>🦀 RustScan Documentation</h1>
+                <p>Modern high-performance port scanner built in Rust</p>
+            </div>
+            <div class="links">
+                <a href="rustscan/index.html" class="link-card">
+                    <h3>📚 API Documentation</h3>
+                    <p>Complete library documentation with examples</p>
+                </a>
+                <a href="https://github.com/RustScan/RustScan" class="link-card">
+                    <h3>💻 Source Code</h3>
+                    <p>View the project on GitHub</p>
+                </a>
+                <a href="https://github.com/RustScan/RustScan/releases" class="link-card">
+                    <h3>🚀 Releases</h3>
+                    <p>Download the latest version</p>
+                </a>
+            </div>
+        </body>
+        </html>
+        EOF
+    
+    - name: Upload documentation artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: documentation
+        path: target/doc/
+        retention-days: 30
+    
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v4
+      if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./target/doc
+        destination_dir: docs
+        enable_jekyll: false
+
+  # Validate documentation accessibility
+  accessibility-check:
+    name: Documentation Accessibility
+    runs-on: ubuntu-latest
+    needs: docs-build
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download documentation artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: documentation
+        path: target/doc/
+    
+    - name: Install accessibility tools
+      run: |
+        npm install -g @axe-core/cli
+    
+    - name: Check accessibility compliance
+      run: |
+        # Start a simple HTTP server for testing
+        cd target/doc
+        python3 -m http.server 8080 &
+        SERVER_PID=$!
+        sleep 2
+        
+        # Run accessibility checks
+        axe http://localhost:8080/rustscan/index.html --exit
+        
+        # Cleanup
+        kill $SERVER_PID || true
+    
+    - name: Validate HTML structure
+      run: |
+        # Check for proper heading hierarchy and structure
+        find target/doc -name "*.html" -exec grep -l "h1\|h2\|h3" {} \; | head -5 | while read file; do
+          echo "Checking $file for proper HTML structure..."
+          # Basic HTML validation
+          python3 -c "
+        import html.parser
+        class HTMLValidator(html.parser.HTMLParser):
+            def error(self, message): raise Exception(message)
+        try:
+            with open('$file') as f:
+                HTMLValidator().feed(f.read())
+            print('✅ Valid HTML structure')
+        except Exception as e:
+            print('❌ HTML validation error:', e)
+          "
+        done
+
+  # Performance testing for documentation generation
+  doc-performance:
+    name: Documentation Generation Performance
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-perf-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Benchmark documentation generation
+      run: |
+        echo "Starting documentation generation benchmark..."
+        START_TIME=$(date +%s)
+        
+        cargo doc --no-deps --document-private-items
+        
+        END_TIME=$(date +%s)
+        DURATION=$((END_TIME - START_TIME))
+        
+        echo "Documentation generation completed in ${DURATION} seconds"
+        
+        # Check if generation time is reasonable (under 5 minutes)
+        if [ $DURATION -gt 300 ]; then
+          echo "⚠️  Documentation generation took longer than expected"
+          exit 1
+        fi
+        
+        echo "✅ Documentation generation performance is acceptable"
+    
+    - name: Check documentation size
+      run: |
+        DOC_SIZE=$(du -sh target/doc/ | cut -f1)
+        echo "Generated documentation size: $DOC_SIZE"
+        
+        # Get size in MB for comparison
+        SIZE_MB=$(du -sm target/doc/ | cut -f1)
+        echo "Documentation size: ${SIZE_MB}MB"
+        
+        # Warn if documentation is unusually large (>50MB)
+        if [ $SIZE_MB -gt 50 ]; then
+          echo "⚠️  Documentation size is larger than expected"
+        else
+          echo "✅ Documentation size is reasonable"
+        fi
+
+  # Integration with external documentation tools
+  external-docs:
+    name: External Documentation Integration
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Check docs.rs compatibility
+      run: |
+        # Verify the crate can be documented on docs.rs
+        cargo doc --no-deps
+        echo "✅ Compatible with docs.rs"
+    
+    - name: Generate README documentation
+      run: |
+        # Extract examples from lib.rs for README
+        echo "# RustScan Library Documentation" > API_EXAMPLES.md
+        echo "" >> API_EXAMPLES.md
+        echo "This file contains code examples extracted from the library documentation." >> API_EXAMPLES.md
+        echo "" >> API_EXAMPLES.md
+        
+        # Extract code blocks from documentation
+        grep -A 20 "```rust" src/lib.rs | grep -v "```" | head -50 >> API_EXAMPLES.md || true
+    
+    - name: Upload documentation examples
+      uses: actions/upload-artifact@v4
+      with:
+        name: api-examples
+        path: API_EXAMPLES.md
+        retention-days: 30

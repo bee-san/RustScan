@@ -12,7 +12,11 @@ const TOP_PORT_NUMBER: u16 = 65535;
 ///   - Random will randomize the order in which ports will be scanned.
 #[derive(Deserialize, Debug, ValueEnum, Clone, Copy, PartialEq, Eq)]
 pub enum ScanOrder {
+    /// Sequential port scanning from start to end (e.g., 1, 2, 3, ...).
+    /// Provides predictable scanning order but may be easily detected.
     Serial,
+    /// Randomized port scanning order for evasion.
+    /// Helps avoid detection by security systems but uses more CPU.
     Random,
 }
 
@@ -22,15 +26,40 @@ pub enum ScanOrder {
 ///   - custom will read the ScriptConfig file and the available scripts in the predefined folders
 #[derive(Deserialize, Debug, ValueEnum, Clone, PartialEq, Eq, Copy)]
 pub enum ScriptsRequired {
+    /// No scripts will be executed, only port scan results shown.
     None,
+    /// Execute the default embedded Nmap script for service detection.
     Default,
+    /// Execute custom scripts from configuration files and script directories.
     Custom,
 }
 
 /// Represents the range of ports to be scanned.
+///
+/// This struct defines the inclusive range of port numbers for scanning operations.
+/// Both TCP and UDP protocols use the same 16-bit port number space (1-65535).
+///
+/// ## Examples
+///
+/// ```rust
+/// use rustscan::input::PortRange;
+///
+/// // Common ports
+/// let common_ports = PortRange { start: 1, end: 1024 };
+///
+/// // Full port range
+/// let all_ports = PortRange { start: 1, end: 65535 };
+///
+/// // Custom range
+/// let web_ports = PortRange { start: 80, end: 8080 };
+/// ```
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct PortRange {
+    /// The starting port number (inclusive).
+    /// Must be between 1 and 65535, and less than or equal to `end`.
     pub start: u16,
+    /// The ending port number (inclusive).
+    /// Must be between 1 and 65535, and greater than or equal to `start`.
     pub end: u16,
 }
 
