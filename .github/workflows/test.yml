@@ -48,7 +48,7 @@ jobs:
         if: matrix.cross
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
       - name: Run tests (native)
         if: "!matrix.cross"
@@ -58,7 +58,16 @@ jobs:
         if: matrix.cross
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+          AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
+          PKG_CONFIG_ALLOW_CROSS: 1
         run: |
-          # Run unit tests that don't require execution on target platform
-          cargo test --target ${{ matrix.target }} --lib --bins
-          # Skip integration tests that would require ARM64 execution
+          # First ensure we can build for the target
+          cargo build --target ${{ matrix.target }} --release
+          # Compile tests but don't run them (since we can't execute ARM64 on x86_64)
+          cargo test --target ${{ matrix.target }} --lib --no-run
+          # Verify clippy works for cross-compilation
+          cargo clippy --target ${{ matrix.target }} -- --deny warnings
+          # Verify formatting (platform agnostic)  
+          cargo fmt --check
