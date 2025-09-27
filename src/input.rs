@@ -113,7 +113,7 @@ pub struct Opts {
     /// it will do every port at the same time. Although, your OS may not
     /// support this.
     #[arg(short, long, default_value = "4500")]
-    pub batch_size: u16,
+    pub batch_size: usize,
 
     /// The timeout in milliseconds before a port is assumed to be closed.
     #[arg(short, long, default_value = "1500")]
@@ -126,7 +126,7 @@ pub struct Opts {
 
     /// Automatically ups the ULIMIT with the value you provided.
     #[arg(short, long)]
-    pub ulimit: Option<u64>,
+    pub ulimit: Option<usize>,
 
     /// The order of scanning to be performed. The "serial" option will
     /// scan ports in ascending order while the "random" option will scan
@@ -262,10 +262,10 @@ pub struct Config {
     range: Option<PortRange>,
     greppable: Option<bool>,
     accessible: Option<bool>,
-    batch_size: Option<u16>,
+    batch_size: Option<usize>,
     timeout: Option<u32>,
     tries: Option<u8>,
-    ulimit: Option<u64>,
+    ulimit: Option<usize>,
     resolver: Option<String>,
     scan_order: Option<ScanOrder>,
     command: Option<Vec<String>>,
