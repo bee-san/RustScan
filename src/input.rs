@@ -35,27 +35,30 @@ pub struct PortRange {
 }
 
 #[cfg(not(tarpaulin_include))]
+// Parse a single range token like "10-100" into PortRange and validate start <= end.
+#[cfg(not(tarpaulin_include))]
 fn parse_range(input: &str) -> Result<PortRange, String> {
-    let range = input
-        .split('-')
-        .map(str::parse)
-        .collect::<Result<Vec<u16>, std::num::ParseIntError>>();
-
-    if range.is_err() {
+    let parts = input.split('-').collect::<Vec<&str>>();
+    if parts.len() != 2 {
         return Err(String::from(
             "the range format must be 'start-end'. Example: 1-1000.",
         ));
     }
 
-    match range.unwrap().as_slice() {
-        [start, end] => Ok(PortRange {
-            start: *start,
-            end: *end,
-        }),
-        _ => Err(String::from(
-            "the range format must be 'start-end'. Example: 1-1000.",
-        )),
+    let start = parts[0].parse::<u16>().map_err(|_| {
+        String::from("the range format must be 'start-end' where start and end are numbers.")
+    })?;
+    let end = parts[1].parse::<u16>().map_err(|_| {
+        String::from("the range format must be 'start-end' where start and end are numbers.")
+    })?;
+
+    if start > end {
+        return Err(String::from(
+            "range start must be less than or equal to range end.",
+        ));
     }
+
+    Ok(PortRange { start, end })
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -80,9 +83,9 @@ pub struct Opts {
     #[arg(short, long, value_delimiter = ',')]
     pub ports: Option<Vec<u16>>,
 
-    /// A range of ports with format start-end. Example: 1-1000.
-    #[arg(short, long, conflicts_with = "ports", value_parser = parse_range)]
-    pub range: Option<PortRange>,
+    /// A comma-separated list of ranges with format start-end. Example: 1-1000,2000-3000.
+    #[arg(short, long, conflicts_with = "ports", value_delimiter = ',', value_parser = parse_range)]
+    pub range: Option<Vec<PortRange>>,
 
     /// Whether to ignore the configuration file or not.
     #[arg(short, long)]
@@ -169,10 +172,10 @@ impl Opts {
         let mut opts = Opts::parse();
 
         if opts.ports.is_none() && opts.range.is_none() {
-            opts.range = Some(PortRange {
+            opts.range = Some(vec![PortRange {
                 start: LOWEST_PORT_NUMBER,
                 end: TOP_PORT_NUMBER,
-            });
+            }]);
         }
 
         opts
@@ -259,7 +262,7 @@ impl Default for Opts {
 pub struct Config {
     addresses: Option<Vec<String>>,
     ports: Option<Vec<u16>>,
-    range: Option<PortRange>,
+    range: Option<Vec<PortRange>>,
     greppable: Option<bool>,
     accessible: Option<bool>,
     batch_size: Option<u16>,
@@ -412,10 +415,10 @@ mod tests {
     fn opts_merge_optional_arguments() {
         let mut opts = Opts::default();
         let mut config = Config::default();
-        config.range = Some(PortRange {
+        config.range = Some(vec![PortRange {
             start: 1,
             end: 1_000,
-        });
+        }]);
         config.ulimit = Some(1_000);
         config.resolver = Some("1.1.1.1".to_owned());
 
