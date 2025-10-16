@@ -70,13 +70,26 @@ impl Scanner {
     /// If you want to run RustScan normally, this is the entry point used
     /// Returns all open ports as `Vec<u16>`
     pub async fn run(&self) -> Vec<SocketAddr> {
+        // let ports: Vec<u16> = self
+        //     .port_strategy
+        //     .order()
+        //     .iter()
+        //     .filter(|&port| !self.exclude_ports.contains(port))
+        //     .copied()
+        //     .collect();
+
+        let mut seen = HashSet::new();
         let ports: Vec<u16> = self
             .port_strategy
             .order()
-            .iter()
-            .filter(|&port| !self.exclude_ports.contains(port))
-            .copied()
+            .into_iter()
+            .filter(|port| seen.insert(*port))
+            .filter(|port| !self.exclude_ports.contains(port))
             .collect();
+        // ports.retain(|port| seen.insert(*port));
+        // ports.retain(|port| !self.exclude_ports.contains(port));
+        // let ports = ports;
+
         let mut socket_iterator: SocketIterator = SocketIterator::new(&self.ips, &ports);
         let mut open_sockets: Vec<SocketAddr> = Vec::new();
         let mut ftrs = FuturesUnordered::new();
