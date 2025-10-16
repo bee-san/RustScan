@@ -17,30 +17,56 @@ pub enum PortStrategy {
 }
 
 impl PortStrategy {
-    pub fn pick(range: &Option<PortRange>, ports: Option<Vec<u16>>, order: ScanOrder) -> Self {
-        match order {
-            ScanOrder::Serial if ports.is_none() => {
-                let range = range.as_ref().unwrap();
-                PortStrategy::Serial(SerialRange {
-                    start: range.start,
-                    end: range.end,
-                })
-            }
-            ScanOrder::Random if ports.is_none() => {
-                let range = range.as_ref().unwrap();
-                PortStrategy::Random(RandomRange {
-                    start: range.start,
-                    end: range.end,
-                })
-            }
-            ScanOrder::Serial => PortStrategy::Manual(ports.unwrap()),
-            ScanOrder::Random => {
-                let mut rng = rng();
-                let mut ports = ports.unwrap();
-                ports.shuffle(&mut rng);
-                PortStrategy::Manual(ports)
-            }
+    pub fn pick(range: &Option<Vec<PortRange>>, ports: Option<Vec<u16>>, order: ScanOrder) -> Self {
+        // If ports are specified, use them (shuffle if Random)
+        if let Some(mut ports_vec) = ports {
+            return match order {
+                ScanOrder::Serial => PortStrategy::Manual(ports_vec),
+                ScanOrder::Random => {
+                    let mut rng = rng();
+                    ports_vec.shuffle(&mut rng);
+                    PortStrategy::Manual(ports_vec)
+                }
+            };
         }
+
+        // No explicit ports provided: fall back to ranges (one or many)
+        if let Some(ranges) = range {
+            if ranges.len() == 1 {
+                let r = &ranges[0];
+                return match order {
+                    ScanOrder::Serial => PortStrategy::Serial(SerialRange {
+                        start: r.start,
+                        end: r.end,
+                    }),
+                    ScanOrder::Random => PortStrategy::Random(RandomRange {
+                        start: r.start,
+                        end: r.end,
+                    }),
+                };
+            }
+
+            // Multiple ranges: expand into a single Vec<u16>
+            let mut combined: Vec<u16> = Vec::new();
+            for r in ranges {
+                combined.extend(r.start..=r.end);
+            }
+
+            // For Random order, shuffle the combined vector
+            if let ScanOrder::Random = order {
+                let mut rng = rng();
+                combined.shuffle(&mut rng);
+            }
+
+            return PortStrategy::Manual(combined);
+        }
+
+        // No ranges or ports provided: this should not happen because Opts::read()
+        // sets a default range, but handle defensively.
+        PortStrategy::Serial(SerialRange {
+            start: 1,
+            end: 65_535,
+        })
     }
 
     pub fn order(&self) -> Vec<u16> {
@@ -103,7 +129,7 @@ mod tests {
     #[test]
     fn serial_strategy_with_range() {
         let range = PortRange { start: 1, end: 100 };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Serial);
+        let strategy = PortStrategy::pick(&Some(vec![range.clone()]), None, ScanOrder::Serial);
         let result = strategy.order();
         let expected_range = (1..=100).collect::<Vec<u16>>();
         assert_eq!(expected_range, result);
@@ -111,7 +137,7 @@ mod tests {
     #[test]
     fn random_strategy_with_range() {
         let range = PortRange { start: 1, end: 100 };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
+        let strategy = PortStrategy::pick(&Some(vec![range.clone()]), None, ScanOrder::Random);
         let mut result = strategy.order();
         let expected_range = (1..=100).collect::<Vec<u16>>();
         assert_ne!(expected_range, result);

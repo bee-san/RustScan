@@ -24,7 +24,7 @@ fn bench_port_strategy() {
         start: 1,
         end: 1_000,
     };
-    let _strategy = PortStrategy::pick(&Some(range.clone()), None, ScanOrder::Serial);
+    let _strategy = PortStrategy::pick(&Some(vec![range.clone()]), None, ScanOrder::Serial);
 }
 
 fn bench_address_parsing() {
@@ -51,8 +51,8 @@ fn criterion_benchmark(c: &mut Criterion) {
         start: 1,
         end: 1_000,
     };
-    let strategy_tcp = PortStrategy::pick(&Some(range.clone()), None, ScanOrder::Serial);
-    let strategy_udp = PortStrategy::pick(&Some(range.clone()), None, ScanOrder::Serial);
+    let strategy_tcp = PortStrategy::pick(&Some(vec![range.clone()]), None, ScanOrder::Serial);
+    let strategy_udp = PortStrategy::pick(&Some(vec![range.clone()]), None, ScanOrder::Serial);
 
     let scanner_tcp = Scanner::new(
         &addrs,

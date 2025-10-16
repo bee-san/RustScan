@@ -321,7 +321,7 @@ mod tests {
             start: 1,
             end: 1_000,
         };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
+        let strategy = PortStrategy::pick(&Some(vec![range.clone()]), None, ScanOrder::Random);
         let scanner = Scanner::new(
             &addrs,
             10,
@@ -345,7 +345,7 @@ mod tests {
             start: 1,
             end: 1_000,
         };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
+        let strategy = PortStrategy::pick(&Some(vec![range.clone()]), None, ScanOrder::Random);
         let scanner = Scanner::new(
             &addrs,
             10,
@@ -368,7 +368,7 @@ mod tests {
             start: 1,
             end: 1_000,
         };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
+        let strategy = PortStrategy::pick(&Some(vec![range.clone()]), None, ScanOrder::Random);
         let scanner = Scanner::new(
             &addrs,
             10,
@@ -390,7 +390,7 @@ mod tests {
             start: 400,
             end: 445,
         };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
+        let strategy = PortStrategy::pick(&Some(vec![range.clone()]), None, ScanOrder::Random);
         let scanner = Scanner::new(
             &addrs,
             10,
@@ -415,7 +415,7 @@ mod tests {
             start: 400,
             end: 600,
         };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
+        let strategy = PortStrategy::pick(&Some(vec![range.clone()]), None, ScanOrder::Random);
         let scanner = Scanner::new(
             &addrs,
             10,
@@ -439,7 +439,7 @@ mod tests {
             start: 1,
             end: 1_000,
         };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
+        let strategy = PortStrategy::pick(&Some(vec![range.clone()]), None, ScanOrder::Random);
         let scanner = Scanner::new(
             &addrs,
             10,
@@ -463,7 +463,7 @@ mod tests {
             start: 1,
             end: 1_000,
         };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
+        let strategy = PortStrategy::pick(&Some(vec![range.clone()]), None, ScanOrder::Random);
         let scanner = Scanner::new(
             &addrs,
             10,
@@ -486,7 +486,7 @@ mod tests {
             start: 1,
             end: 1_000,
         };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
+        let strategy = PortStrategy::pick(&Some(vec![range.clone()]), None, ScanOrder::Random);
         let scanner = Scanner::new(
             &addrs,
             10,
@@ -505,10 +505,10 @@ mod tests {
     fn udp_google_dns_runs() {
         let addrs = vec!["8.8.8.8".parse::<IpAddr>().unwrap()];
         let range = PortRange {
-            start: 100,
-            end: 150,
+            start: 400,
+            end: 445,
         };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
+        let strategy = PortStrategy::pick(&Some(vec![range.clone()]), None, ScanOrder::Random);
         let scanner = Scanner::new(
             &addrs,
             10,
