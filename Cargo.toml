@@ -41,7 +41,7 @@ text_placeholder = { version = "0.5", features = ["struct_context"] }
 once_cell = "1.21.3"
 
 [dev-dependencies]
-parameterized = "2.0.0"
+parameterized = "2.1.0"
 wait-timeout = "0.2"
 criterion = { version = "0.7", features = ["html_reports"] }
 
