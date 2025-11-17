@@ -200,7 +200,7 @@ impl Opts {
 
         merge_required!(
             addresses, greppable, accessible, batch_size, timeout, tries, scan_order, scripts,
-            command, udp
+            command, udp, no_banner
         );
     }
 
@@ -273,6 +273,7 @@ pub struct Config {
     exclude_ports: Option<Vec<u16>>,
     exclude_addresses: Option<Vec<String>>,
     udp: Option<bool>,
+    no_banner: Option<bool>,
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -348,6 +349,7 @@ mod tests {
                 exclude_ports: None,
                 exclude_addresses: None,
                 udp: Some(false),
+                no_banner: None,
             }
         }
     }
