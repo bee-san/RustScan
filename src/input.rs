@@ -329,6 +329,7 @@ pub fn default_config_path() -> PathBuf {
     config_path
 }
 
+/// Returns the deprecated home directory config path used for backwards compatibility.
 pub fn old_default_config_path() -> PathBuf {
     let Some(mut config_path) = dirs::home_dir() else {
         panic!("Could not infer config file path.");
