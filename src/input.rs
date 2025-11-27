@@ -294,7 +294,14 @@ impl Config {
     ///
     pub fn read(custom_config_path: Option<PathBuf>) -> Self {
         let mut content = String::new();
-        let config_path = custom_config_path.unwrap_or_else(default_config_path);
+        let config_path = custom_config_path.unwrap_or_else(|| {
+            let path = default_config_path();
+            match path.exists() {
+                true => path,
+                false => old_default_config_path(),
+            }
+        });
+
         if config_path.exists() {
             content = match fs::read_to_string(config_path) {
                 Ok(content) => content,
@@ -316,6 +323,15 @@ impl Config {
 
 /// Constructs default path to config toml
 pub fn default_config_path() -> PathBuf {
+    let Some(mut config_path) = dirs::config_dir() else {
+        panic!("Could not infer config file path.");
+    };
+    config_path.push(".rustscan.toml");
+    config_path
+}
+
+/// Returns the deprecated home directory config path used for backwards compatibility.
+pub fn old_default_config_path() -> PathBuf {
     let Some(mut config_path) = dirs::home_dir() else {
         panic!("Could not infer config file path.");
     };

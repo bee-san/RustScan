@@ -219,6 +219,17 @@ The Modern Day Port Scanner."#;
         opts.greppable,
         opts.accessible
     );
+
+    if opts.config_path.is_none() {
+        let old_config_path = input::old_default_config_path();
+        detail!(
+            format!(
+                "For backwards compatibility, the config file may also be at {old_config_path:?}"
+            ),
+            opts.greppable,
+            opts.accessible
+        );
+    }
 }
 
 #[cfg(unix)]
