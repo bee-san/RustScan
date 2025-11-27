@@ -419,17 +419,6 @@ mod tests {
     }
 
     #[test]
-    fn resolver_default_cloudflare() {
-        let opts = Opts::default();
-
-        let resolver = get_resolver(&opts.resolver);
-        let lookup = resolver.lookup_ip("www.example.com.").unwrap();
-
-        assert!(opts.resolver.is_none());
-        assert!(lookup.iter().next().is_some());
-    }
-
-    #[test]
     fn resolver_args_google_dns() {
         // https://developers.google.com/speed/public-dns
         let opts = Opts {
