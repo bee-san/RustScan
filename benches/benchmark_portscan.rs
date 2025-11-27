@@ -97,7 +97,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let mut address_group = c.benchmark_group("address parsing");
     address_group.measurement_time(Duration::from_secs(10));
     address_group.bench_function("parse addresses with exclusions", |b| {
-        b.iter(|| bench_address_parsing())
+        b.iter(bench_address_parsing)
     });
     address_group.finish();
 }

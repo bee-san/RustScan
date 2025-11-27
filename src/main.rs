@@ -23,9 +23,9 @@ extern crate dirs;
 
 // Average value for Ubuntu
 #[cfg(unix)]
-const DEFAULT_FILE_DESCRIPTORS_LIMIT: u64 = 8000;
+const DEFAULT_FILE_DESCRIPTORS_LIMIT: usize = 8000;
 // Safest batch size based on experimentation
-const AVERAGE_BATCH_SIZE: u16 = 3000;
+const AVERAGE_BATCH_SIZE: usize = 3000;
 
 #[macro_use]
 extern crate log;
@@ -78,10 +78,10 @@ fn main() {
     }
 
     #[cfg(unix)]
-    let batch_size: u16 = infer_batch_size(&opts, adjust_ulimit_size(&opts));
+    let batch_size: usize = infer_batch_size(&opts, adjust_ulimit_size(&opts));
 
     #[cfg(not(unix))]
-    let batch_size: u16 = AVERAGE_BATCH_SIZE;
+    let batch_size: usize = AVERAGE_BATCH_SIZE;
 
     let scanner = Scanner::new(
         &ips,
@@ -233,10 +233,12 @@ The Modern Day Port Scanner."#;
 }
 
 #[cfg(unix)]
-fn adjust_ulimit_size(opts: &Opts) -> u64 {
+fn adjust_ulimit_size(opts: &Opts) -> usize {
     use rlimit::Resource;
+    use std::convert::TryInto;
 
     if let Some(limit) = opts.ulimit {
+        let limit = limit as u64;
         if Resource::NOFILE.set(limit, limit).is_ok() {
             detail!(
                 format!("Automatically increasing ulimit value to {limit}."),
@@ -253,14 +255,12 @@ fn adjust_ulimit_size(opts: &Opts) -> u64 {
     }
 
     let (soft, _) = Resource::NOFILE.get().unwrap();
-    soft
+    soft.try_into().unwrap_or(usize::MAX)
 }
 
 #[cfg(unix)]
-fn infer_batch_size(opts: &Opts, ulimit: u64) -> u16 {
-    use std::convert::TryInto;
-
-    let mut batch_size: u64 = opts.batch_size.into();
+fn infer_batch_size(opts: &Opts, ulimit: usize) -> usize {
+    let mut batch_size = opts.batch_size;
 
     // Adjust the batch size when the ulimit value is lower than the desired batch size
     if ulimit < batch_size {
@@ -271,7 +271,7 @@ fn infer_batch_size(opts: &Opts, ulimit: u64) -> u16 {
         // When the OS supports high file limits like 8000, but the user
         // selected a batch size higher than this we should reduce it to
         // a lower number.
-        if ulimit < AVERAGE_BATCH_SIZE.into() {
+        if ulimit < AVERAGE_BATCH_SIZE {
             // ulimit is smaller than aveage batch size
             // user must have very small ulimit
             // decrease batch size to half of ulimit
@@ -280,7 +280,7 @@ fn infer_batch_size(opts: &Opts, ulimit: u64) -> u16 {
             batch_size = ulimit / 2;
         } else if ulimit > DEFAULT_FILE_DESCRIPTORS_LIMIT {
             info!("Batch size is now average batch size");
-            batch_size = AVERAGE_BATCH_SIZE.into();
+            batch_size = AVERAGE_BATCH_SIZE;
         } else {
             batch_size = ulimit - 100;
         }
@@ -293,8 +293,6 @@ fn infer_batch_size(opts: &Opts, ulimit: u64) -> u16 {
     }
 
     batch_size
-        .try_into()
-        .expect("Couldn't fit the batch size into a u16.")
 }
 
 #[cfg(test)]

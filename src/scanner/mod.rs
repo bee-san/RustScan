@@ -29,7 +29,7 @@ use std::{
 #[derive(Debug)]
 pub struct Scanner {
     ips: Vec<IpAddr>,
-    batch_size: u16,
+    batch_size: usize,
     timeout: Duration,
     tries: NonZeroU8,
     greppable: bool,
@@ -44,7 +44,7 @@ pub struct Scanner {
 impl Scanner {
     pub fn new(
         ips: &[IpAddr],
-        batch_size: u16,
+        batch_size: usize,
         timeout: Duration,
         tries: u8,
         greppable: bool,
