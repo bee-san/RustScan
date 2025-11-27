@@ -1,5 +1,5 @@
 test:
-    cargo nextest run
+    cargo test
     cargo clippy -- --deny warnings
     cargo clippy --tests -- --deny warnings
     cargo fmt --check

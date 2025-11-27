@@ -173,7 +173,7 @@ fn main() {
             );
             match script.run() {
                 Ok(script_result) => {
-                    detail!(script_result.to_string(), opts.greppable, opts.accessible);
+                    detail!(script_result.clone(), opts.greppable, opts.accessible);
                 }
                 Err(e) => {
                     warning!(&format!("Error {e}"), opts.greppable, opts.accessible);
