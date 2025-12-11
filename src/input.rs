@@ -27,35 +27,52 @@ pub enum ScriptsRequired {
     Custom,
 }
 
-/// Represents the range of ports to be scanned.
+/// Represents the ranges of ports to be scanned Vec<(start:u16, end: u16)>
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct PortRange {
-    pub start: u16,
-    pub end: u16,
-}
+pub struct PortRanges(pub Vec<(u16, u16)>);
 
 #[cfg(not(tarpaulin_include))]
-fn parse_range(input: &str) -> Result<PortRange, String> {
-    let range = input
-        .split('-')
-        .map(str::parse)
-        .collect::<Result<Vec<u16>, std::num::ParseIntError>>();
+/// Parse a single `start-end` token (e.g. "100-200") into `(start, end)`.
+/// Returns `None` when the token is malformed, cannot be parsed as `u16`,
+/// or `start > end`.
+fn parse_range(input: &str) -> Option<(u16, u16)> {
+    let mut parts = input.trim().splitn(2, '-').map(str::trim);
+    let a = parts.next()?;
+    let b = parts.next()?;
 
-    if range.is_err() {
-        return Err(String::from(
-            "the range format must be 'start-end'. Example: 1-1000.",
-        ));
+    let start = a.parse::<u16>().ok()?;
+    let end = b.parse::<u16>().ok()?;
+
+    if start <= end {
+        Some((start, end))
+    } else {
+        None
+    }
+}
+#[cfg(not(tarpaulin_include))]
+/// Parse a comma-separated list of `start-end` ranges into `PortRanges`.
+///
+/// Errors with a helpful message identifying the bad token.
+fn parse_ranges(input: &str) -> Result<PortRanges, String> {
+    let s = input.trim();
+    if s.is_empty() {
+        return Err("empty input: expected one or more comma-separated 'start-end' pairs".into());
     }
 
-    match range.unwrap().as_slice() {
-        [start, end] => Ok(PortRange {
-            start: *start,
-            end: *end,
-        }),
-        _ => Err(String::from(
-            "the range format must be 'start-end'. Example: 1-1000.",
-        )),
-    }
+    let ranges_res: Result<Vec<(u16, u16)>, String> = s
+        .split(',')
+        .map(|token| {
+            let t = token.trim();
+            parse_range(t).ok_or_else(|| {
+                format!(
+                    "invalid range token `{}` — expected `start-end` with 0 <= start <= end <= 65535",
+                    t
+                )
+            })
+        })
+        .collect();
+
+    ranges_res.map(PortRanges)
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -80,9 +97,9 @@ pub struct Opts {
     #[arg(short, long, value_delimiter = ',')]
     pub ports: Option<Vec<u16>>,
 
-    /// A range of ports with format start-end. Example: 1-1000.
-    #[arg(short, long, conflicts_with = "ports", value_parser = parse_range)]
-    pub range: Option<PortRange>,
+    /// Ranges of ports with comma seperated start-end pairs. Example: 1-500,1000-2500,4000-7000
+    #[arg(short, long, conflicts_with = "ports", value_parser = parse_ranges)]
+    pub range: Option<PortRanges>,
 
     /// Whether to ignore the configuration file or not.
     #[arg(short, long)]
@@ -169,10 +186,7 @@ impl Opts {
         let mut opts = Opts::parse();
 
         if opts.ports.is_none() && opts.range.is_none() {
-            opts.range = Some(PortRange {
-                start: LOWEST_PORT_NUMBER,
-                end: TOP_PORT_NUMBER,
-            });
+            opts.range = Some(PortRanges(vec![(LOWEST_PORT_NUMBER, TOP_PORT_NUMBER)]));
         }
 
         opts
@@ -259,7 +273,7 @@ impl Default for Opts {
 pub struct Config {
     addresses: Option<Vec<String>>,
     ports: Option<Vec<u16>>,
-    range: Option<PortRange>,
+    range: Option<PortRanges>,
     greppable: Option<bool>,
     accessible: Option<bool>,
     batch_size: Option<usize>,
@@ -344,7 +358,7 @@ mod tests {
     use clap::{CommandFactory, Parser};
     use parameterized::parameterized;
 
-    use super::{Config, Opts, PortRange, ScanOrder, ScriptsRequired};
+    use super::{Config, Opts, PortRanges, ScanOrder, ScriptsRequired};
 
     impl Config {
         fn default() -> Self {
@@ -430,10 +444,7 @@ mod tests {
     fn opts_merge_optional_arguments() {
         let mut opts = Opts::default();
         let mut config = Config::default();
-        config.range = Some(PortRange {
-            start: 1,
-            end: 1_000,
-        });
+        config.range = Some(PortRanges(vec![(1, 1_000)]));
         config.ulimit = Some(1_000);
         config.resolver = Some("1.1.1.1".to_owned());
 
