@@ -1,6 +1,6 @@
 use async_std::task::block_on;
 use criterion::{criterion_group, criterion_main, Criterion};
-use rustscan::input::{Opts, PortRange, ScanOrder};
+use rustscan::input::{Opts, PortRanges, ScanOrder};
 use rustscan::port_strategy::PortStrategy;
 use rustscan::scanner::Scanner;
 use std::hint::black_box;
@@ -20,11 +20,8 @@ fn bench_address() {
 }
 
 fn bench_port_strategy() {
-    let range = PortRange {
-        start: 1,
-        end: 1_000,
-    };
-    let _strategy = PortStrategy::pick(&Some(range.clone()), None, ScanOrder::Serial);
+    let range = PortRanges(vec![(1, 1_000)]);
+    let _strategy = PortStrategy::pick(Some(range.clone()), None, ScanOrder::Serial);
 }
 
 fn bench_address_parsing() {
@@ -47,12 +44,9 @@ fn bench_address_parsing() {
 
 fn criterion_benchmark(c: &mut Criterion) {
     let addrs = vec!["127.0.0.1".parse::<IpAddr>().unwrap()];
-    let range = PortRange {
-        start: 1,
-        end: 1_000,
-    };
-    let strategy_tcp = PortStrategy::pick(&Some(range.clone()), None, ScanOrder::Serial);
-    let strategy_udp = PortStrategy::pick(&Some(range.clone()), None, ScanOrder::Serial);
+    let range = PortRanges(vec![(1, 1_000)]);
+    let strategy_tcp = PortStrategy::pick(Some(range.clone()), None, ScanOrder::Serial);
+    let strategy_udp = PortStrategy::pick(Some(range.clone()), None, ScanOrder::Serial);
 
     let scanner_tcp = Scanner::new(
         &addrs,
