@@ -6,7 +6,7 @@ on:
   push:
     branches:
       - master
-
+ 
 jobs:
   test:
     name: Test Suite
