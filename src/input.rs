@@ -1,9 +1,8 @@
 //! Provides a means to read, parse and hold configuration options for scans.
 use clap::{Parser, ValueEnum};
-use serde_derive::Deserialize;
 use std::collections::HashMap;
-use std::fs;
 use std::path::PathBuf;
+use serde::Deserialize;
 
 const LOWEST_PORT_NUMBER: u16 = 1;
 const TOP_PORT_NUMBER: u16 = 65535;
@@ -35,7 +34,6 @@ pub struct PortRange {
     pub end: u16,
 }
 
-#[cfg(not(tarpaulin_include))]
 fn parse_range(input: &str) -> Result<PortRange, String> {
     let range = input
         .split('-')
@@ -156,7 +154,6 @@ pub struct Opts {
     pub udp: bool,
 }
 
-#[cfg(not(tarpaulin_include))]
 impl Opts {
     pub fn read() -> Self {
         let mut opts = Opts::parse();
@@ -249,7 +246,6 @@ impl Default for Opts {
 /// Struct used to deserialize the options specified within our config file.
 /// These will be further merged with our command line arguments in order to
 /// generate the final Opts struct.
-#[cfg(not(tarpaulin_include))]
 #[derive(Debug, Deserialize)]
 pub struct Config {
     addresses: Option<Vec<String>>,
@@ -269,7 +265,6 @@ pub struct Config {
     udp: Option<bool>,
 }
 
-#[cfg(not(tarpaulin_include))]
 #[allow(clippy::doc_link_with_quotes)]
 impl Config {
     /// Reads the configuration file with TOML format and parses it into a
@@ -284,15 +279,9 @@ impl Config {
     /// exclude_ports = [8080, 9090, 80]
     /// udp = false
     ///
-    pub fn read(custom_config_path: Option<PathBuf>) -> Self {
-        let mut content = String::new();
+    pub async fn read(custom_config_path: Option<PathBuf>) -> Self {
         let config_path = custom_config_path.unwrap_or_else(default_config_path);
-        if config_path.exists() {
-            content = match fs::read_to_string(config_path) {
-                Ok(content) => content,
-                Err(_) => String::new(),
-            }
-        }
+        let content = tokio::fs::read_to_string(config_path).await.unwrap_or_default();
 
         let config: Config = match toml::from_str(&content) {
             Ok(config) => config,

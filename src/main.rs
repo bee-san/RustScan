@@ -10,7 +10,6 @@ use rustscan::scripts::{init_scripts, Script, ScriptFile};
 use rustscan::{detail, funny_opening, output, warning};
 
 use colorful::{Color, Colorful};
-use futures::executor::block_on;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::string::ToString;
@@ -30,17 +29,17 @@ const AVERAGE_BATCH_SIZE: u16 = 3000;
 #[macro_use]
 extern crate log;
 
-#[cfg(not(tarpaulin_include))]
 #[allow(clippy::too_many_lines)]
 /// Faster Nmap scanning with Rust
 /// If you're looking for the actual scanning, check out the module Scanner
-fn main() {
+#[tokio::main]
+async fn main() {
     env_logger::init();
     let mut benchmarks = Benchmark::init();
     let mut rustscan_bench = NamedTimer::start("RustScan");
 
     let mut opts: Opts = Opts::read();
-    let config = Config::read(opts.config_path.clone());
+    let config = Config::read(opts.config_path.clone()).await;
     opts.merge(&config);
 
     debug!("Main() `opts` arguments are {:?}", opts);
@@ -63,7 +62,7 @@ fn main() {
         print_opening(&opts);
     }
 
-    let ips: Vec<IpAddr> = parse_addresses(&opts);
+    let ips: Vec<IpAddr> = parse_addresses(&opts).await;
 
     if ips.is_empty() {
         warning!(
@@ -99,7 +98,7 @@ fn main() {
     debug!("Scanner finished building: {:?}", scanner);
 
     let mut portscan_bench = NamedTimer::start("Portscan");
-    let scan_result = block_on(scanner.run());
+    let scan_result = scanner.run().await;
     portscan_bench.end();
     benchmarks.push(portscan_bench);
 
@@ -175,7 +174,7 @@ fn main() {
             );
             match script.run() {
                 Ok(script_result) => {
-                    detail!(script_result.to_string(), opts.greppable, opts.accessible);
+                    detail!(script_result.clone(), opts.greppable, opts.accessible);
                 }
                 Err(e) => {
                     warning!(&format!("Error {e}"), opts.greppable, opts.accessible);
@@ -299,11 +298,18 @@ mod tests {
     use super::{adjust_ulimit_size, infer_batch_size};
     use super::{print_opening, Opts};
 
+
+    fn options() -> Opts {
+        Opts {
+            batch_size: 50_000,
+            ..Opts::default()
+        }
+    }
+
     #[test]
     #[cfg(unix)]
     fn batch_size_lowered() {
-        let mut opts = Opts::default();
-        opts.batch_size = 50_000;
+        let opts = options();
         let batch_size = infer_batch_size(&opts, 120);
 
         assert!(batch_size < opts.batch_size);
@@ -312,51 +318,54 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn batch_size_lowered_average_size() {
-        let mut opts = Opts::default();
-        opts.batch_size = 50_000;
+        let opts = options();
         let batch_size = infer_batch_size(&opts, 9_000);
 
-        assert!(batch_size == 3_000);
+        assert_eq!(batch_size, 3_000);
     }
     #[test]
     #[cfg(unix)]
     fn batch_size_equals_ulimit_lowered() {
         // because ulimit and batch size are same size, batch size is lowered
         // to ULIMIT - 100
-        let mut opts = Opts::default();
-        opts.batch_size = 50_000;
+        let opts = options();
         let batch_size = infer_batch_size(&opts, 5_000);
 
-        assert!(batch_size == 4_900);
+        assert_eq!(batch_size, 4_900);
     }
     #[test]
     #[cfg(unix)]
     fn batch_size_adjusted_2000() {
         // ulimit == batch_size
-        let mut opts = Opts::default();
-        opts.batch_size = 50_000;
-        opts.ulimit = Some(2_000);
+        let opts = Opts {
+            ulimit: Some(2_000),
+            ..options()
+        };
         let batch_size = adjust_ulimit_size(&opts);
 
-        assert!(batch_size == 2_000);
+        assert_eq!(batch_size, 2_000);
     }
 
     #[test]
     #[cfg(unix)]
     fn test_high_ulimit_no_greppable_mode() {
-        let mut opts = Opts::default();
-        opts.batch_size = 10;
-        opts.greppable = false;
+        let opts = Opts {
+            batch_size: 10,
+            greppable: false,
+            ..options()
+        };
 
         let batch_size = infer_batch_size(&opts, 1_000_000);
 
-        assert!(batch_size == opts.batch_size);
+        assert_eq!(batch_size, opts.batch_size);
     }
 
     #[test]
     fn test_print_opening_no_panic() {
-        let mut opts = Opts::default();
-        opts.ulimit = Some(2_000);
+        let opts = Opts {
+            ulimit: Some(2_000),
+            ..Opts::default()
+        };
         // print opening should not panic
         print_opening(&opts);
     }

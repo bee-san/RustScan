@@ -1,9 +1,7 @@
 //! Provides a means to hold configuration options specifically for port scanning.
-mod range_iterator;
+use either::Either;
 use crate::input::{PortRange, ScanOrder};
 use rand::seq::SliceRandom;
-use rand::thread_rng;
-use range_iterator::RangeIterator;
 
 /// Represents options of port scanning.
 ///
@@ -35,7 +33,7 @@ impl PortStrategy {
             }
             ScanOrder::Serial => PortStrategy::Manual(ports.unwrap()),
             ScanOrder::Random => {
-                let mut rng = thread_rng();
+                let mut rng = rand::rng();
                 let mut ports = ports.unwrap();
                 ports.shuffle(&mut rng);
                 PortStrategy::Manual(ports)
@@ -43,19 +41,21 @@ impl PortStrategy {
         }
     }
 
-    pub fn order(&self) -> Vec<u16> {
+    pub fn ordered_iter(&self) -> impl Iterator<Item=u16> + use<'_> {
         match self {
-            PortStrategy::Manual(ports) => ports.clone(),
-            PortStrategy::Serial(range) => range.generate(),
-            PortStrategy::Random(range) => range.generate(),
+            PortStrategy::Manual(ports) => Either::Left(Either::Left(ports.iter().copied())),
+            PortStrategy::Serial(range) => {
+                Either::Left(Either::Right(range.start..=range.end))
+            },
+            PortStrategy::Random(range) => {
+                let length = range.end - range.start;
+                let start = range.start;
+                let iter = blackrock2::BlackRockIter::new(u64::from(length) + 1)
+                    .map(move |port| port as u16 + start);
+                Either::Right(iter)
+            },
         }
     }
-}
-
-/// Trait associated with a port strategy. Each PortStrategy must be able
-/// to generate an order for future port scanning.
-trait RangeOrder {
-    fn generate(&self) -> Vec<u16>;
 }
 
 /// As the name implies SerialRange will always generate a vector in
@@ -66,33 +66,12 @@ pub struct SerialRange {
     end: u16,
 }
 
-impl RangeOrder for SerialRange {
-    fn generate(&self) -> Vec<u16> {
-        (self.start..=self.end).collect()
-    }
-}
-
 /// As the name implies RandomRange will always generate a vector with
 /// a random order. This vector is built following the LCG algorithm.
 #[derive(Debug)]
 pub struct RandomRange {
     start: u16,
     end: u16,
-}
-
-impl RangeOrder for RandomRange {
-    // Right now using RangeIterator and generating a range + shuffling the
-    // vector is pretty much the same. The advantages of it will come once
-    // we have to generate different ranges for different IPs without storing
-    // actual vectors.
-    //
-    // Another benefit of RangeIterator is that it always generate a range with
-    // a certain distance between the items in the Array. The chances of having
-    // port numbers close to each other are pretty slim due to the way the
-    // algorithm works.
-    fn generate(&self) -> Vec<u16> {
-        RangeIterator::new(self.start.into(), self.end.into()).collect()
-    }
 }
 
 #[cfg(test)]
@@ -104,16 +83,16 @@ mod tests {
     fn serial_strategy_with_range() {
         let range = PortRange { start: 1, end: 100 };
         let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Serial);
-        let result = strategy.order();
-        let expected_range = (1..=100).into_iter().collect::<Vec<u16>>();
+        let result = strategy.ordered_iter().collect::<Vec<_>>();
+        let expected_range = (1..=100).collect::<Vec<u16>>();
         assert_eq!(expected_range, result);
     }
     #[test]
     fn random_strategy_with_range() {
         let range = PortRange { start: 1, end: 100 };
         let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
-        let mut result = strategy.order();
-        let expected_range = (1..=100).into_iter().collect::<Vec<u16>>();
+        let mut result = strategy.ordered_iter().collect::<Vec<_>>();
+        let expected_range = (1..=100).collect::<Vec<u16>>();
         assert_ne!(expected_range, result);
 
         result.sort_unstable();
@@ -123,15 +102,15 @@ mod tests {
     #[test]
     fn serial_strategy_with_ports() {
         let strategy = PortStrategy::pick(&None, Some(vec![80, 443]), ScanOrder::Serial);
-        let result = strategy.order();
+        let result = strategy.ordered_iter().collect::<Vec<_>>();
         assert_eq!(vec![80, 443], result);
     }
 
     #[test]
     fn random_strategy_with_ports() {
         let strategy = PortStrategy::pick(&None, Some((1..10).collect()), ScanOrder::Random);
-        let mut result = strategy.order();
-        let expected_range = (1..10).into_iter().collect::<Vec<u16>>();
+        let mut result = strategy.ordered_iter().collect::<Vec<_>>();
+        let expected_range = (1..10).collect::<Vec<u16>>();
         assert_ne!(expected_range, result);
 
         result.sort_unstable();

@@ -13,7 +13,6 @@ use wait_timeout::ChildExt;
 
 const TIMEOUT_MARGIN: u32 = 3;
 
-#[cfg(not(tarpaulin_include))]
 fn run_rustscan_with_timeout(args: &[&str], timeout: Duration) {
     println!("Running: target/debug/rustscan: {}", args.join(" "));
 

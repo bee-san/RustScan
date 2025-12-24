@@ -78,7 +78,7 @@
 use crate::input::ScriptsRequired;
 use anyhow::{anyhow, Result};
 use log::debug;
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::convert::TryInto;
 use std::fs::{self, File};
@@ -95,7 +95,6 @@ ports_separator = ","
 call_format = "nmap -vvv -p {{port}} {{ip}}"
 "#;
 
-#[cfg(not(tarpaulin_include))]
 pub fn init_scripts(scripts: ScriptsRequired) -> Result<Vec<ScriptFile>> {
     let mut scripts_to_run: Vec<ScriptFile> = Vec::new();
 
@@ -268,7 +267,6 @@ impl Script {
     }
 }
 
-#[cfg(not(tarpaulin_include))]
 fn execute_script(script: &str) -> Result<String> {
     debug!("\nScript arguments {}", script);
     let process = Exec::shell(script);
@@ -360,7 +358,6 @@ pub struct ScriptConfig {
     pub developer: Option<Vec<String>>,
 }
 
-#[cfg(not(tarpaulin_include))]
 impl ScriptConfig {
     pub fn read_config() -> Result<ScriptConfig> {
         let Some(mut home_dir) = dirs::home_dir() else {

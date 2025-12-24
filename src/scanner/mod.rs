@@ -6,119 +6,32 @@ use log::debug;
 mod socket_iterator;
 use socket_iterator::SocketIterator;
 
-use async_std::net::TcpStream;
-use async_std::prelude::*;
-use async_std::{io, net::UdpSocket};
-use colored::Colorize;
-use futures::stream::FuturesUnordered;
 use std::{
     collections::HashSet,
-    net::{IpAddr, Shutdown, SocketAddr},
-    num::NonZeroU8,
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    num::NonZero,
     time::Duration,
 };
+use tokio::{
+    net::{TcpStream, UdpSocket},
+    io::{self, AsyncWriteExt},
+    time,
+};
+use colored::Colorize;
+use futures_lite::{stream, StreamExt};
+use tokio_par_stream::TokioParStream;
 
-/// The class for the scanner
-/// IP is data type IpAddr and is the IP address
-/// start & end is where the port scan starts and ends
-/// batch_size is how many ports at a time should be scanned
-/// Timeout is the time RustScan should wait before declaring a port closed. As datatype Duration.
-/// greppable is whether or not RustScan should print things, or wait until the end to print only the ip and open ports.
-/// Added by wasuaje - 01/26/2024:
-///     exclude_ports  is an exclusion port list
-#[cfg(not(tarpaulin_include))]
 #[derive(Debug)]
-pub struct Scanner {
-    ips: Vec<IpAddr>,
-    batch_size: u16,
-    timeout: Duration,
-    tries: NonZeroU8,
-    greppable: bool,
-    port_strategy: PortStrategy,
-    accessible: bool,
-    exclude_ports: Vec<u16>,
+struct ScannerConnector {
     udp: bool,
+    tries: NonZero<u8>,
+    timeout: Duration,
+    greppable: bool,
+    accessible: bool,
 }
 
-// Allowing too many arguments for clippy.
-#[allow(clippy::too_many_arguments)]
-impl Scanner {
-    pub fn new(
-        ips: &[IpAddr],
-        batch_size: u16,
-        timeout: Duration,
-        tries: u8,
-        greppable: bool,
-        port_strategy: PortStrategy,
-        accessible: bool,
-        exclude_ports: Vec<u16>,
-        udp: bool,
-    ) -> Self {
-        Self {
-            batch_size,
-            timeout,
-            tries: NonZeroU8::new(std::cmp::max(tries, 1)).unwrap(),
-            greppable,
-            port_strategy,
-            ips: ips.iter().map(ToOwned::to_owned).collect(),
-            accessible,
-            exclude_ports,
-            udp,
-        }
-    }
-
-    /// Runs scan_range with chunk sizes
-    /// If you want to run RustScan normally, this is the entry point used
-    /// Returns all open ports as `Vec<u16>`
-    /// Added by wasuaje - 01/26/2024:
-    ///    Filtering port against exclude port list
-    pub async fn run(&self) -> Vec<SocketAddr> {
-        let ports: Vec<u16> = self
-            .port_strategy
-            .order()
-            .iter()
-            .filter(|&port| !self.exclude_ports.contains(port))
-            .copied()
-            .collect();
-        let mut socket_iterator: SocketIterator = SocketIterator::new(&self.ips, &ports);
-        let mut open_sockets: Vec<SocketAddr> = Vec::new();
-        let mut ftrs = FuturesUnordered::new();
-        let mut errors: HashSet<String> = HashSet::new();
-
-        for _ in 0..self.batch_size {
-            if let Some(socket) = socket_iterator.next() {
-                ftrs.push(self.scan_socket(socket));
-            } else {
-                break;
-            }
-        }
-
-        debug!("Start scanning sockets. \nBatch size {}\nNumber of ip-s {}\nNumber of ports {}\nTargets all together {} ",
-            self.batch_size,
-            self.ips.len(),
-            &ports.len(),
-            (self.ips.len() * ports.len()));
-
-        while let Some(result) = ftrs.next().await {
-            if let Some(socket) = socket_iterator.next() {
-                ftrs.push(self.scan_socket(socket));
-            }
-
-            match result {
-                Ok(socket) => open_sockets.push(socket),
-                Err(e) => {
-                    let error_string = e.to_string();
-                    if errors.len() < self.ips.len() * 1000 {
-                        errors.insert(error_string);
-                    }
-                }
-            }
-        }
-        debug!("Typical socket connection errors {:?}", errors);
-        debug!("Open Sockets found: {:?}", &open_sockets);
-        open_sockets
-    }
-
+impl ScannerConnector {
     /// Given a socket, scan it self.tries times.
     /// Turns the address into a SocketAddr
     /// Deals with the `<result>` type
@@ -149,6 +62,7 @@ impl Scanner {
         }
 
         let tries = self.tries.get();
+        let mut last_err = None;
         for nr_try in 1..=tries {
             match self.connect(socket).await {
                 Ok(tcp_stream) => {
@@ -156,7 +70,7 @@ impl Scanner {
                         "Connection was successful, shutting down stream {}",
                         &socket
                     );
-                    if let Err(e) = tcp_stream.shutdown(Shutdown::Both) {
+                    if let Err(e) = {tcp_stream}.shutdown().await {
                         debug!("Shutdown stream error {}", &e);
                     }
                     self.fmt_ports(socket);
@@ -167,17 +81,23 @@ impl Scanner {
                 Err(e) => {
                     let mut error_string = e.to_string();
 
-                    assert!(!error_string.to_lowercase().contains("too many open files"), "Too many open files. Please reduce batch size. The default is 5000. Try -b 2500.");
+                    assert!(
+                        !error_string.to_lowercase().contains("too many open files"),
+                        "Too many open files. Please reduce batch size. The default is 5000. Try -b 2500."
+                    );
 
-                    if nr_try == tries {
+                    let ip = socket.ip();
+                    last_err = Some(move || {
+                        use std::fmt::Write;
                         error_string.push(' ');
-                        error_string.push_str(&socket.ip().to_string());
-                        return Err(io::Error::new(io::ErrorKind::Other, error_string));
-                    }
+                        write!(error_string, "{ip}").unwrap();
+                        io::Error::other(error_string)
+                    });
                 }
             };
         }
-        unreachable!();
+
+        Err(last_err.unwrap()())
     }
 
     /// Performs the connection to the socket with timeout
@@ -195,12 +115,10 @@ impl Scanner {
     /// ```
     ///
     async fn connect(&self, socket: SocketAddr) -> io::Result<TcpStream> {
-        let stream = io::timeout(
+        time::timeout(
             self.timeout,
             async move { TcpStream::connect(socket).await },
-        )
-        .await?;
-        Ok(stream)
+        ).await?
     }
 
     /// Binds to a UDP socket so we can send and recieve packets
@@ -254,19 +172,14 @@ impl Scanner {
                 udp_socket.connect(socket).await?;
                 udp_socket.send(payload).await?;
 
-                match io::timeout(wait, udp_socket.recv(&mut buf)).await {
-                    Ok(size) => {
+                match time::timeout(wait, udp_socket.recv(&mut buf)).await {
+                    Ok(Ok(size)) => {
                         debug!("Received {} bytes", size);
                         self.fmt_ports(socket);
                         Ok(true)
                     }
-                    Err(e) => {
-                        if e.kind() == io::ErrorKind::TimedOut {
-                            Ok(false)
-                        } else {
-                            Err(e)
-                        }
-                    }
+                    Ok(Err(e)) => Err(e),
+                    Err(_) => Ok(false),
                 }
             }
             Err(e) => {
@@ -288,15 +201,113 @@ impl Scanner {
     }
 }
 
+
+/// The class for the scanner
+/// IP is data type IpAddr and is the IP address
+/// start & end is where the port scan starts and ends
+/// batch_size is how many ports at a time should be scanned
+/// Timeout is the time RustScan should wait before declaring a port closed. As datatype Duration.
+/// greppable is whether or not RustScan should print things, or wait until the end to print only the ip and open ports.
+/// Added by wasuaje - 01/26/2024:
+///     exclude_ports  is an exclusion port list
+#[derive(Debug)]
+pub struct Scanner {
+    ips: Box<[IpAddr]>,
+    port_strategy: PortStrategy,
+    exclude_ports: Vec<u16>,
+    batch_size: u16,
+    connector: Arc<ScannerConnector>,
+}
+
+// Allowing too many arguments for clippy.
+#[allow(clippy::too_many_arguments)]
+impl Scanner {
+    pub fn new(
+        ips: &[IpAddr],
+        batch_size: u16,
+        timeout: Duration,
+        tries: u8,
+        greppable: bool,
+        port_strategy: PortStrategy,
+        accessible: bool,
+        exclude_ports: Vec<u16>,
+        udp: bool,
+    ) -> Self {
+        Self {
+            batch_size,
+            port_strategy,
+            ips: Box::from(ips),
+            exclude_ports,
+            connector: Arc::new(ScannerConnector {
+                udp,
+                accessible,
+                timeout,
+                tries: NonZero::new(tries).unwrap_or(NonZero::<u8>::MIN),
+                greppable,
+            })
+        }
+    }
+
+    /// Runs scan_range with chunk sizes
+    /// If you want to run RustScan normally, this is the entry point used
+    /// Returns all open ports as `Vec<u16>`
+    /// Added by wasuaje - 01/26/2024:
+    ///    Filtering port against exclude port list
+    pub async fn run(&self) -> Vec<SocketAddr> {
+        let ports = self
+            .port_strategy
+            .ordered_iter()
+            .filter(|&port| !self.exclude_ports.contains(&port))
+            .collect::<Vec<_>>();
+
+        let ports_len = ports.len();
+
+        let socket_iterator = SocketIterator::new(&self.ips, ports.into_iter());
+        let mut errors: HashSet<String> = HashSet::new();
+
+        let stream = stream::iter(socket_iterator)
+            .map(|socket| (socket, Arc::clone(&self.connector)))
+            .map(|(socket, connector)| async move {
+                connector.scan_socket(socket).await
+            })
+            .par_buffered_unordered(usize::from(self.batch_size))
+            .filter_map(|result| {
+                let err = match result {
+                    Ok(sock) => return Some(sock),
+                    Err(err) => err,
+                };
+                let error_string = err.to_string();
+                if errors.len() < self.ips.len() * 1000 {
+                    errors.insert(error_string);
+                }
+                None
+            });
+
+
+        debug!(
+            "Start scanning sockets. \nBatch size {}\nNumber of ip-s {}\nNumber of ports {}\nTargets all together {} ",
+            self.batch_size,
+            self.ips.len(),
+            &ports_len,
+            self.ips.len() * ports_len
+        );
+
+        let open_sockets = stream.collect::<Vec<_>>().await;
+
+        debug!("Typical socket connection errors {:?}", errors);
+        debug!("Open Sockets found: {:?}", &open_sockets);
+        open_sockets
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::input::{PortRange, ScanOrder};
-    use async_std::task::block_on;
     use std::{net::IpAddr, time::Duration};
 
-    #[test]
-    fn scanner_runs() {
+    #[tokio::test]
+    async fn scanner_runs() {
         // Makes sure the program still runs and doesn't panic
         let addrs = vec!["127.0.0.1".parse::<IpAddr>().unwrap()];
         let range = PortRange {
@@ -315,13 +326,11 @@ mod tests {
             vec![9000],
             false,
         );
-        block_on(scanner.run());
-        // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
-        assert_eq!(1, 1);
+        scanner.run().await;
     }
-    #[test]
-    fn ipv6_scanner_runs() {
-        // Makes sure the program still runs and doesn't panic
+
+    #[tokio::test]
+    async fn ipv6_scanner_runs() {
         let addrs = vec!["::1".parse::<IpAddr>().unwrap()];
         let range = PortRange {
             start: 1,
@@ -339,12 +348,11 @@ mod tests {
             vec![9000],
             false,
         );
-        block_on(scanner.run());
-        // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
-        assert_eq!(1, 1);
+        scanner.run().await;
     }
-    #[test]
-    fn quad_zero_scanner_runs() {
+
+    #[tokio::test]
+    async fn quad_zero_scanner_runs() {
         let addrs = vec!["0.0.0.0".parse::<IpAddr>().unwrap()];
         let range = PortRange {
             start: 1,
@@ -362,11 +370,11 @@ mod tests {
             vec![9000],
             false,
         );
-        block_on(scanner.run());
-        assert_eq!(1, 1);
+        scanner.run().await;
     }
-    #[test]
-    fn google_dns_runs() {
+
+    #[tokio::test]
+    async fn google_dns_runs() {
         let addrs = vec!["8.8.8.8".parse::<IpAddr>().unwrap()];
         let range = PortRange {
             start: 400,
@@ -384,11 +392,11 @@ mod tests {
             vec![9000],
             false,
         );
-        block_on(scanner.run());
-        assert_eq!(1, 1);
+        scanner.run().await;
     }
-    #[test]
-    fn infer_ulimit_lowering_no_panic() {
+
+    #[tokio::test]
+    async fn infer_ulimit_lowering_no_panic() {
         // Test behaviour on MacOS where ulimit is not automatically lowered
         let addrs = vec!["8.8.8.8".parse::<IpAddr>().unwrap()];
 
@@ -409,12 +417,11 @@ mod tests {
             vec![9000],
             false,
         );
-        block_on(scanner.run());
-        assert_eq!(1, 1);
+        scanner.run().await;
     }
 
-    #[test]
-    fn udp_scan_runs() {
+    #[tokio::test]
+    async fn udp_scan_runs() {
         // Makes sure the program still runs and doesn't panic
         let addrs = vec!["127.0.0.1".parse::<IpAddr>().unwrap()];
         let range = PortRange {
@@ -433,12 +440,11 @@ mod tests {
             vec![9000],
             true,
         );
-        block_on(scanner.run());
-        // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
-        assert_eq!(1, 1);
+        scanner.run().await;
     }
-    #[test]
-    fn udp_ipv6_runs() {
+
+    #[tokio::test]
+    async fn udp_ipv6_runs() {
         // Makes sure the program still runs and doesn't panic
         let addrs = vec!["::1".parse::<IpAddr>().unwrap()];
         let range = PortRange {
@@ -457,12 +463,11 @@ mod tests {
             vec![9000],
             true,
         );
-        block_on(scanner.run());
-        // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
-        assert_eq!(1, 1);
+        scanner.run().await;
     }
-    #[test]
-    fn udp_quad_zero_scanner_runs() {
+
+    #[tokio::test]
+    async fn udp_quad_zero_scanner_runs() {
         let addrs = vec!["0.0.0.0".parse::<IpAddr>().unwrap()];
         let range = PortRange {
             start: 1,
@@ -480,11 +485,11 @@ mod tests {
             vec![9000],
             true,
         );
-        block_on(scanner.run());
-        assert_eq!(1, 1);
+        scanner.run().await;
     }
-    #[test]
-    fn udp_google_dns_runs() {
+
+    #[tokio::test]
+    async fn udp_google_dns_runs() {
         let addrs = vec!["8.8.8.8".parse::<IpAddr>().unwrap()];
         let range = PortRange {
             start: 100,
@@ -502,7 +507,6 @@ mod tests {
             vec![9000],
             true,
         );
-        block_on(scanner.run());
-        assert_eq!(1, 1);
+        scanner.run().await;
     }
 }

@@ -17,28 +17,31 @@ exclude = [
 ]
 
 [dependencies]
+tokio = { version = "1.48.0", features = ["rt-multi-thread", "net", "fs", "macros"] }
+tokio-par-stream = "0.1.1"
 clap = { version = "4.5.9", features = ["derive", "wrap_help"] }
-colored = "2.1.0"
-async-std = "1.7.0"
-futures = "0.3"
-rlimit = "0.10.1"
-log = "0.4.22"
+colored = "3.0.0"
+futures-lite = "2.6.1"
+futures-util = "0.3.31"
+rlimit = "0.10.2"
+log = "0.4.29"
 env_logger = "0.11.3"
 anstream = "=0.6.14"
-dirs = "5.0.1"
+dirs = "6.0.0"
 gcd = "2.0.1"
-rand = "0.8.5"
+rand = "0.9.2"
 colorful = "0.2.1"
 ansi_term = "0.12.1"
-toml = "0.8.14"
-serde = "1.0.124"
-serde_derive = "1.0.116"
+toml = "0.8.23"
+serde = { version = "1.0.204", features = ["derive"] }
 cidr-utils = "0.6.1"
-itertools = "0.13.0"
-hickory-resolver = { version = "0.24.0", features = ["dns-over-rustls"] }
-anyhow = "1.0.40"
+itertools = "0.14.0"
+hickory-resolver = { version = "0.24.4", features = ["dns-over-rustls"] }
+anyhow = "1.0.100"
 subprocess = "0.2.6"
 text_placeholder = { version = "0.5", features = ["struct_context"] }
+either = "1.15.0"
+blackrock2 = "0.1.2"
 
 [dev-dependencies]
 parameterized = "2.0.0"

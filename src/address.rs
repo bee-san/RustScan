@@ -1,17 +1,23 @@
 //! Provides functions to parse input IP addresses, CIDRs or files.
-use std::fs::{self, File};
-use std::io::{prelude::*, BufReader};
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
-use std::path::Path;
+
+use std::borrow::Cow;
+use std::iter;
+use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
 use std::str::FromStr;
 
 use cidr_utils::cidr::IpCidr;
+use either::Either;
+use futures_lite::{stream, Stream};
+use futures_util::StreamExt as _;
 use hickory_resolver::{
     config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts},
-    Resolver,
+    TokioAsyncResolver,
 };
-use log::debug;
-
+use itertools::Itertools;
+use tokio::{fs, io};
+use tokio::fs::File;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use crate::input::Opts;
 use crate::warning;
 
@@ -27,46 +33,40 @@ use crate::warning;
 ///
 /// let ips = parse_addresses(&opts);
 /// ```
-pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
-    let mut ips: Vec<IpAddr> = Vec::new();
-    let mut unresolved_addresses: Vec<&str> = Vec::new();
-    let backup_resolver = get_resolver(&input.resolver);
+pub async fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
+    let backup_resolver = &get_resolver(&input.resolver).await;
 
-    for address in &input.addresses {
-        let parsed_ips = parse_address(address, &backup_resolver);
-        if !parsed_ips.is_empty() {
-            ips.extend(parsed_ips);
-        } else {
-            unresolved_addresses.push(address);
-        }
-    }
+    stream::iter(input.addresses.iter())
+        .map(move |address| {
+            let address = address.as_str();
+            async move {
+                (parse_address(Cow::Borrowed(address), backup_resolver).await, address)
+            }
+        })
+        .buffer_unordered(10)
+        .map(|(adresses, addr)| async move {
+            let mut adresses = adresses.peekable();
+            'file_lookup: {
+                if adresses.peek().is_none() {
+                    let Ok(file) = File::open(addr).await else {
+                        warning!(
+                            format!("Host {addr:?} could not be resolved."),
+                            input.greppable,
+                            input.accessible
+                        );
+                        break 'file_lookup
+                    };
 
-    // If we got to this point this can only be a file path or the wrong input.
-    for file_path in unresolved_addresses {
-        let file_path = Path::new(file_path);
+                    return read_ips_from_file(file, backup_resolver).boxed()
+                }
+            }
 
-        if !file_path.is_file() {
-            warning!(
-                format!("Host {file_path:?} could not be resolved."),
-                input.greppable,
-                input.accessible
-            );
-
-            continue;
-        }
-
-        if let Ok(x) = read_ips_from_file(file_path, &backup_resolver) {
-            ips.extend(x);
-        } else {
-            warning!(
-                format!("Host {file_path:?} could not be resolved."),
-                input.greppable,
-                input.accessible
-            );
-        }
-    }
-
-    ips
+            stream::iter(adresses).boxed()
+        })
+        .buffer_unordered(10)
+        .flat_map_unordered(None, |stream| stream)
+        .collect()
+        .await
 }
 
 /// Given a string, parse it as a host, IP address, or CIDR.
@@ -82,32 +82,22 @@ pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
 /// # use hickory_resolver::Resolver;
 /// let ips = parse_address("127.0.0.1", &Resolver::default().unwrap());
 /// ```
-pub fn parse_address(address: &str, resolver: &Resolver) -> Vec<IpAddr> {
-    IpCidr::from_str(address)
-        .map(|cidr| cidr.iter().map(|c| c.address()).collect())
-        .ok()
-        .or_else(|| {
-            format!("{}:{}", &address, 80)
-                .to_socket_addrs()
-                .ok()
-                .map(|mut iter| vec![iter.next().unwrap().ip()])
-        })
-        .unwrap_or_else(|| resolve_ips_from_host(address, resolver))
+pub async fn parse_address<'a>(address: Cow<'a, str>, resolver: &'a TokioAsyncResolver) -> impl Iterator<Item=IpAddr> + use<'a> {
+    match IpCidr::from_str(&address) {
+        Ok(cidr) => Either::Left(cidr.iter().map(|c| c.address())),
+        Err(_) => Either::Right(resolve_ips_from_host(address, resolver).await),
+    }
 }
 
 /// Uses DNS to get the IPS associated with host
-fn resolve_ips_from_host(source: &str, backup_resolver: &Resolver) -> Vec<IpAddr> {
-    let mut ips: Vec<IpAddr> = Vec::new();
-
-    if let Ok(addrs) = source.to_socket_addrs() {
-        for ip in addrs {
-            ips.push(ip.ip());
-        }
-    } else if let Ok(addrs) = backup_resolver.lookup_ip(source) {
-        ips.extend(addrs.iter());
+async fn resolve_ips_from_host<'a>(source: Cow<'a, str>, backup_resolver: &'a TokioAsyncResolver) -> impl Iterator<Item=IpAddr> + use<'a> {
+    if let Ok(addrs) = tokio::net::lookup_host((&*source, 80)).await {
+        Either::Left(addrs.into_iter().map(|x| x.ip()).collect_vec().into_iter())
+    } else if let Ok(addrs) = backup_resolver.lookup_ip(&*source).await {
+        Either::Left(addrs.iter().collect_vec().into_iter())
+    } else {
+        Either::Right(iter::empty())
     }
-
-    ips
 }
 
 /// Derive a DNS resolver.
@@ -120,11 +110,11 @@ fn resolve_ips_from_host(source: &str, backup_resolver: &Resolver) -> Vec<IpAddr
 ///       `/etc/resolv.conf` on *nix).
 ///    2. finally, build a CloudFlare-based resolver (default
 ///       behaviour).
-fn get_resolver(resolver: &Option<String>) -> Resolver {
+async fn get_resolver(resolver: &Option<String>) -> TokioAsyncResolver {
     match resolver {
         Some(r) => {
             let mut config = ResolverConfig::new();
-            let resolver_ips = match read_resolver_from_file(r) {
+            let resolver_ips = match read_resolver_from_file(r).await {
                 Ok(ips) => ips,
                 Err(_) => r
                     .split(',')
@@ -137,20 +127,17 @@ fn get_resolver(resolver: &Option<String>) -> Resolver {
                     Protocol::Udp,
                 ));
             }
-            Resolver::new(config, ResolverOpts::default()).unwrap()
+            TokioAsyncResolver::tokio(config, ResolverOpts::default())
         }
-        None => match Resolver::from_system_conf() {
-            Ok(resolver) => resolver,
-            Err(_) => {
-                Resolver::new(ResolverConfig::cloudflare_tls(), ResolverOpts::default()).unwrap()
-            }
-        },
+        None => TokioAsyncResolver::tokio_from_system_conf().unwrap_or_else(|_| {
+            TokioAsyncResolver::tokio(ResolverConfig::cloudflare_tls(), ResolverOpts::default())
+        }),
     }
 }
 
 /// Parses and input file of IPs for use in DNS resolution.
-fn read_resolver_from_file(path: &str) -> Result<Vec<IpAddr>, std::io::Error> {
-    let ips = fs::read_to_string(path)?
+async fn read_resolver_from_file(path: &str) -> io::Result<Vec<IpAddr>> {
+    let ips = fs::read_to_string(path).await?
         .lines()
         .filter_map(|line| IpAddr::from_str(line.trim()).ok())
         .collect();
@@ -158,26 +145,31 @@ fn read_resolver_from_file(path: &str) -> Result<Vec<IpAddr>, std::io::Error> {
     Ok(ips)
 }
 
-#[cfg(not(tarpaulin_include))]
 /// Parses an input file of IPs and uses those
 fn read_ips_from_file(
-    ips: &std::path::Path,
-    backup_resolver: &Resolver,
-) -> Result<Vec<IpAddr>, std::io::Error> {
-    let file = File::open(ips)?;
-    let reader = BufReader::new(file);
+    ips: File,
+    backup_resolver: &TokioAsyncResolver,
+) -> impl Stream<Item=IpAddr> + use<'_> {
+    let stream = stream::once_future(async move {
+        let reader = BufReader::new(ips);
+        let mut lines = reader.lines();
+        let stream = stream::poll_fn(move |cx| {
+            Pin::new(&mut lines)
+                .poll_next_line(cx)
+                .map(Result::ok)
+                .map(Option::flatten)
+        });
 
-    let mut ips: Vec<IpAddr> = Vec::new();
+        stream
+            .map(move |address_line| async move {
+                resolve_ips_from_host(address_line.into(), backup_resolver).await
+            })
+            .buffer_unordered(4)
+            .map(stream::iter)
+            .flatten()
+    });
 
-    for address_line in reader.lines() {
-        if let Ok(address) = address_line {
-            ips.extend(parse_address(&address, backup_resolver));
-        } else {
-            debug!("Line in file is not valid");
-        }
-    }
-
-    Ok(ips)
+    stream.flatten()
 }
 
 #[cfg(test)]
@@ -185,11 +177,13 @@ mod tests {
     use super::{get_resolver, parse_addresses, Opts};
     use std::net::Ipv4Addr;
 
-    #[test]
-    fn parse_correct_addresses() {
-        let mut opts = Opts::default();
-        opts.addresses = vec!["127.0.0.1".to_owned(), "192.168.0.0/30".to_owned()];
-        let ips = parse_addresses(&opts);
+    #[tokio::test]
+    async fn parse_correct_addresses() {
+        let opts = Opts {
+            addresses: vec!["127.0.0.1".to_owned(), "192.168.0.0/30".to_owned()],
+            ..Opts::default()
+        };
+        let ips = parse_addresses(&opts).await;
 
         assert_eq!(
             ips,
@@ -203,78 +197,94 @@ mod tests {
         );
     }
 
-    #[test]
-    fn parse_correct_host_addresses() {
-        let mut opts = Opts::default();
-        opts.addresses = vec!["google.com".to_owned()];
-        let ips = parse_addresses(&opts);
+    #[tokio::test]
+    async fn parse_correct_host_addresses() {
+        let opts = Opts {
+            addresses: vec!["google.com".to_owned()],
+            ..Opts::default()
+        };
+        let ips = parse_addresses(&opts).await;
 
         assert_eq!(ips.len(), 1);
     }
 
-    #[test]
-    fn parse_correct_and_incorrect_addresses() {
-        let mut opts = Opts::default();
-        opts.addresses = vec!["127.0.0.1".to_owned(), "im_wrong".to_owned()];
-        let ips = parse_addresses(&opts);
+    #[tokio::test]
+    async fn parse_correct_and_incorrect_addresses() {
+        let opts = Opts {
+            addresses: vec!["127.0.0.1".to_owned(), "im_wrong".to_owned()],
+            ..Opts::default()
+        };
+        let ips = parse_addresses(&opts).await;
 
         assert_eq!(ips, [Ipv4Addr::new(127, 0, 0, 1),]);
     }
 
-    #[test]
-    fn parse_incorrect_addresses() {
-        let mut opts = Opts::default();
-        opts.addresses = vec!["im_wrong".to_owned(), "300.10.1.1".to_owned()];
-        let ips = parse_addresses(&opts);
+    #[tokio::test]
+    async fn parse_incorrect_addresses() {
+        let opts = Opts {
+            addresses: vec!["im_wrong".to_owned(), "300.10.1.1".to_owned()],
+            ..Opts::default()
+        };
+        let ips = parse_addresses(&opts).await;
 
         assert!(ips.is_empty());
     }
-    #[test]
-    fn parse_hosts_file_and_incorrect_hosts() {
+
+    #[tokio::test]
+    async fn parse_hosts_file_and_incorrect_hosts() {
         // Host file contains IP, Hosts, incorrect IPs, incorrect hosts
-        let mut opts = Opts::default();
-        opts.addresses = vec!["fixtures/hosts.txt".to_owned()];
-        let ips = parse_addresses(&opts);
+        let opts = Opts {
+            addresses: vec!["fixtures/hosts.txt".to_owned()],
+            ..Opts::default()
+        };
+        let ips = parse_addresses(&opts).await;
         assert_eq!(ips.len(), 3);
     }
 
-    #[test]
-    fn parse_empty_hosts_file() {
+    #[tokio::test]
+    async fn parse_empty_hosts_file() {
         // Host file contains IP, Hosts, incorrect IPs, incorrect hosts
-        let mut opts = Opts::default();
-        opts.addresses = vec!["fixtures/empty_hosts.txt".to_owned()];
-        let ips = parse_addresses(&opts);
-        assert_eq!(ips.len(), 0);
+        let opts = Opts {
+            addresses: vec!["fixtures/empty_hosts.txt".to_owned()],
+            ..Opts::default()
+        };
+        let ips = parse_addresses(&opts).await;
+        assert!(ips.is_empty());
     }
 
-    #[test]
-    fn parse_naughty_host_file() {
+    #[tokio::test]
+    async fn parse_naughty_host_file() {
         // Host file contains IP, Hosts, incorrect IPs, incorrect hosts
-        let mut opts = Opts::default();
-        opts.addresses = vec!["fixtures/naughty_string.txt".to_owned()];
-        let ips = parse_addresses(&opts);
-        assert_eq!(ips.len(), 0);
+        let opts = Opts {
+            addresses: vec!["fixtures/naughty_string.txt".to_owned()],
+            ..Opts::default()
+        };
+        let ips = parse_addresses(&opts).await;
+        assert!(ips.is_empty());
     }
 
-    #[test]
-    fn resolver_default_cloudflare() {
+    #[tokio::test]
+    async fn resolver_default_cloudflare() {
         let opts = Opts::default();
 
-        let resolver = get_resolver(&opts.resolver);
-        let lookup = resolver.lookup_ip("www.example.com.").unwrap();
+        let resolver = get_resolver(&opts.resolver).await;
+        let lookup = resolver.lookup_ip("www.example.com.").await.unwrap();
 
         assert!(opts.resolver.is_none());
         assert!(lookup.iter().next().is_some());
     }
 
-    #[test]
-    fn resolver_args_google_dns() {
-        let mut opts = Opts::default();
-        // https://developers.google.com/speed/public-dns
-        opts.resolver = Some("8.8.8.8,8.8.4.4".to_owned());
+    #[tokio::test]
+    async fn resolver_args_google_dns() {
+        let opts = Opts {
+            addresses: vec!["fixtures/naughty_string.txt".to_owned()],
+            // https://developers.google.com/speed/public-dns
+            resolver: Some("8.8.8.8,8.8.4.4".to_owned()),
+            ..Opts::default()
+        };
 
-        let resolver = get_resolver(&opts.resolver);
-        let lookup = resolver.lookup_ip("www.example.com.").unwrap();
+        let resolver = get_resolver(&opts.resolver).await;
+        let lookup = resolver.lookup_ip("www.example.com.").await.unwrap();
 
         assert!(lookup.iter().next().is_some());
     }

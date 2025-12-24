@@ -1,7 +1,7 @@
 use itertools::{iproduct, Product};
 use std::net::{IpAddr, SocketAddr};
 
-pub struct SocketIterator<'s> {
+pub struct SocketIterator<'s, I: Iterator<Item=u16>> {
     // product_it is a cartesian product iterator over
     // the slices of ports and IP addresses.
     //
@@ -10,8 +10,7 @@ pub struct SocketIterator<'s> {
     // all the IPs for one port before moving on to the next one
     // ("hold the port, go through all the IPs, then advance the port...").
     // See also the comments in the iterator implementation for an example.
-    product_it:
-        Product<Box<std::slice::Iter<'s, u16>>, Box<std::slice::Iter<'s, std::net::IpAddr>>>,
+    product_it: Product<I, std::slice::Iter<'s, IpAddr>>,
 }
 
 /// An iterator that receives a slice of IPs and ports and returns a Socket
@@ -19,34 +18,34 @@ pub struct SocketIterator<'s> {
 /// The goal of this iterator is to go over every IP and port combination
 /// without generating a big memory footprint. The alternative would be
 /// generating a vector containing all these combinations.
-impl<'s> SocketIterator<'s> {
-    pub fn new(ips: &'s [IpAddr], ports: &'s [u16]) -> Self {
-        let ports_it = Box::new(ports.iter());
-        let ips_it = Box::new(ips.iter());
+impl<'s, I: Iterator<Item=u16>> SocketIterator<'s, I> {
+    pub fn new(ips: &'s [IpAddr], ports: I) -> Self {
         Self {
-            product_it: iproduct!(ports_it, ips_it),
+            product_it: iproduct!(ports, ips.iter()),
         }
     }
 }
 
-#[allow(clippy::doc_link_with_quotes)]
-impl<'s> Iterator for SocketIterator<'s> {
+impl<'s, I: Iterator<Item=u16>> Iterator for SocketIterator<'s, I> {
     type Item = SocketAddr;
 
     /// Returns a socket based on the combination of one of the provided
     /// IPs and ports or None when these combinations are exhausted. Every
     /// IP will have the same port until a port is incremented.
-    ///
+    /// ```ignore
+    /// # use std::net::IpAddr;
     /// let it = SocketIterator::new(&["127.0.0.1", "192.168.0.1"], &[80, 443]);
-    /// it.next(); // 127.0.0.1:80
-    /// it.next(); // 192.168.0.1:80
-    /// it.next(); // 127.0.0.1:443
-    /// it.next(); // 192.168.0.1:443
-    /// it.next(); // None
+    /// let sock = |ip: &str| -> IpAddr { ip.parse().unwrap() };
+    /// assert_eq!(it.next(), Some(sock("127.0.0.1:80")));
+    /// assert_eq!(it.next(), Some(sock("192.168.0.1:80")));
+    /// assert_eq!(it.next(), Some(sock("127.0.0.1:443")));
+    /// assert_eq!(it.next(), Some(sock("192.168.0.1:443")));
+    /// assert_eq!(it.next(), None);
+    /// ```
     fn next(&mut self) -> Option<Self::Item> {
         self.product_it
             .next()
-            .map(|(port, ip)| SocketAddr::new(*ip, *port))
+            .map(|(port, &ip)| SocketAddr::new(ip, port))
     }
 }
 
@@ -62,7 +61,7 @@ mod tests {
             "192.168.0.1".parse::<IpAddr>().unwrap(),
         ];
         let ports: Vec<u16> = vec![22, 80, 443];
-        let mut it = SocketIterator::new(&addrs, &ports);
+        let mut it = SocketIterator::new(&addrs, ports.iter().copied());
 
         assert_eq!(Some(SocketAddr::new(addrs[0], ports[0])), it.next());
         assert_eq!(Some(SocketAddr::new(addrs[1], ports[0])), it.next());
