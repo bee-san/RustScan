@@ -1,13 +1,17 @@
 name: CD Pipeline
 
-on: [push]
+on:
+  push:
+    branches:
+      - "master"
+    tags:
+      - "*"
 
 jobs:
   build-nix:
     env:
       IN_PIPELINE: true
     runs-on: ${{ matrix.os }}
-    if: github.ref == 'refs/heads/master'
     strategy:
       matrix:
         type: [ubuntu-x64, ubuntu-x86, armv7, aarch64]
@@ -48,19 +52,15 @@ jobs:
           args: "--locked --release"
           strip: true
           toolchain: stable
-      - name: Build tar.gz for homebrew installs
-        if: matrix.type == 'ubuntu-x64'
-        run: |
-          tar czf ${{ matrix.name }}.tar.gz -C target/x86_64-unknown-linux-musl/release rustscan
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifacts
+        uses: houseabsolute/actions-rust-release@v0
         with:
-          name: ${{ matrix.name }}
-          path: ${{ matrix.path }}
-      - uses: actions/upload-artifact@v4
-        if: matrix.type == 'ubuntu-x64'
-        with:
-          name: ${{ matrix.name }}.tar.gz
-          path: ${{ matrix.name }}.tar.gz
+          executable-name: rustscan
+          target: ${{ matrix.target }}
+          archive-name: ${{ matrix.name }}
+          changes-file: ""
+          release-tag-prefix: "disabled"
+
   build-deb:
     needs: [build-nix]
     runs-on: ubuntu-latest
@@ -88,7 +88,6 @@ jobs:
     env:
       IN_PIPELINE: true
     runs-on: macos-latest
-    if: github.ref == 'refs/heads/master'
     steps:
       - uses: actions/checkout@v4
       - name: Cache cargo & target directories
@@ -101,23 +100,19 @@ jobs:
           args: "--locked --release"
           strip: true
           toolchain: stable
-      - name: Build tar.gz for homebrew installs
-        run: |
-          tar czf x86_64-macos-rustscan.tar.gz -C target/x86_64-apple-darwin/release rustscan
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifacts
+        uses: houseabsolute/actions-rust-release@v0
         with:
-          name: x86_64-macos-rustscan
-          path: target/x86_64-apple-darwin/release/rustscan
-      - uses: actions/upload-artifact@v4
-        with:
-          name: x86_64-macos-rustscan.tar.gz
-          path: x86_64-macos-rustscan.tar.gz
-  
+          executable-name: rustscan
+          target: x86_64-apple-darwin
+          archive-name: x86_64-macos-rustscan
+          changes-file: ""
+          release-tag-prefix: "disabled"
+
   build-macos-aarch64:
     env:
       IN_PIPELINE: true
     runs-on: macos-latest
-    if: github.ref == 'refs/heads/master'
     steps:
       - uses: actions/checkout@v4
       - name: Cache cargo & target directories
@@ -130,23 +125,19 @@ jobs:
           args: "--locked --release"
           strip: true
           toolchain: stable
-      - name: Build tar.gz for homebrew installs
-        run: |
-          tar czf aarch64-macos-rustscan.tar.gz -C target/aarch64-apple-darwin/release rustscan
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifacts
+        uses: houseabsolute/actions-rust-release@v0
         with:
-          name: aarch64-macos-rustscan
-          path: target/aarch64-apple-darwin/release/rustscan
-      - uses: actions/upload-artifact@v4
-        with:
-          name: aarch64-macos-rustscan.tar.gz
-          path: aarch64-macos-rustscan.tar.gz
+          executable-name: rustscan
+          target: aarch64-apple-darwin
+          archive-name: aarch64-macos-rustscan
+          changes-file: ""
+          release-tag-prefix: "disabled"
 
   build-windows:
     env:
       IN_PIPELINE: true
     runs-on: ${{ matrix.os }}
-    if: github.ref == 'refs/heads/master'
     strategy:
       matrix:
         type: [windows-x64, windows-x86]
@@ -154,13 +145,11 @@ jobs:
           - type: windows-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            name: x86_64-windows-rustscan.exe
-            path: target\x86_64-pc-windows-msvc\release\rustscan.exe
+            name: x86_64-windows-rustscan
           - type: windows-x86
             os: windows-latest
             target: i686-pc-windows-msvc
-            name: x86-windows-rustscan.exe
-            path: target\i686-pc-windows-msvc\release\rustscan.exe
+            name: x86-windows-rustscan
     steps:
       - uses: actions/checkout@v4
       - name: Cache cargo & target directories
@@ -169,11 +158,41 @@ jobs:
         uses: houseabsolute/actions-rust-cross@v0
         with:
           command: build
-          target:  ${{ matrix.target }}
+          target: ${{ matrix.target }}
           args: "--locked --release"
           strip: true
           toolchain: stable
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifacts
+        uses: houseabsolute/actions-rust-release@v0
         with:
-          name: ${{ matrix.name }}
-          path: ${{ matrix.path }}
+          executable-name: rustscan
+          target: ${{ matrix.target }}
+          archive-name: ${{ matrix.name }}
+          changes-file: ""
+          release-tag-prefix: "disabled"
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs:
+      - build-nix
+      - build-deb
+      - build-macos
+      - build-macos-aarch64
+      - build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v5
+        with:
+          merge-multiple: true
+      - name: Publish artifacts to GitHub release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.deb
+            *.sha256
+            *.tar.gz
+            *.zip
