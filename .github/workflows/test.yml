@@ -18,11 +18,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install stable toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: ${{ matrix.rust }}
-          override: true
+        run: rustup toolchain install "${{ matrix.rust }}" --profile minimal
 
       - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
