@@ -1,9 +1,14 @@
 name: Dependabot Auto-Merge
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
   dependabot:
     runs-on: ubuntu-latest
-    if: ${{ github.actor == 'dependabot[bot]' }}
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'bee-san/RustScan'
     steps:
       - name: Enable auto-merge for Dependabot PRs
         run: |
