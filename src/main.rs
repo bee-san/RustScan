@@ -21,6 +21,10 @@ use rustscan::address::parse_addresses;
 extern crate colorful;
 extern crate dirs;
 
+/// Luma threshold for distinguishing light vs dark terminals.
+/// Values above this indicate a light background.
+const LIGHT_TERMINAL_THRESHOLD: f32 = 0.6;
+
 // Average value for Ubuntu
 #[cfg(unix)]
 const DEFAULT_FILE_DESCRIPTORS_LIMIT: usize = 8000;
@@ -191,22 +195,56 @@ fn main() {
     info!("{}", benchmarks.summary());
 }
 
+/// Detects whether the terminal has a light background.
+///
+/// Uses the terminal's reported background color luminance to determine
+/// if a light color scheme should be used. Returns `false` (dark theme)
+/// if detection fails, as most terminals use dark backgrounds.
+fn is_light_terminal() -> bool {
+    match terminal_light::luma() {
+        Ok(luma) => {
+            debug!("Detected terminal luma: {luma:.2}");
+            luma > LIGHT_TERMINAL_THRESHOLD
+        }
+        Err(e) => {
+            debug!("Could not detect terminal theme: {e:?}, defaulting to dark");
+            false
+        }
+    }
+}
+
+/// Returns the appropriate banner colors based on terminal background.
+///
+/// For dark terminals: bright green banner, yellow info box
+/// For light terminals: dark blue banner, dark orange info box
+fn banner_colors(is_light: bool) -> (Color, Color) {
+    if is_light {
+        (Color::DarkBlue, Color::DarkOrange3a)
+    } else {
+        (Color::Green, Color::Yellow)
+    }
+}
+
 /// Prints the opening title of RustScan
 #[allow(clippy::items_after_statements, clippy::needless_raw_string_hashes)]
 fn print_opening(opts: &Opts) {
     debug!("Printing opening");
+
+    let is_light = is_light_terminal();
+    let (banner_color, info_color) = banner_colors(is_light);
+
     let s = r#".----. .-. .-. .----..---.  .----. .---.   .--.  .-. .-.
 | {}  }| { } |{ {__ {_   _}{ {__  /  ___} / {} \ |  `| |
 | .-. \| {_} |.-._} } | |  .-._} }\     }/  /\  \| |\  |
 `-' `-'`-----'`----'  `-'  `----'  `---' `-'  `-'`-' `-'
 The Modern Day Port Scanner."#;
 
-    println!("{}", s.gradient(Color::Green).bold());
+    println!("{}", s.gradient(banner_color).bold());
     let info = r#"________________________________________
 : http://discord.skerritt.blog         :
 : https://github.com/RustScan/RustScan :
  --------------------------------------"#;
-    println!("{}", info.gradient(Color::Yellow).bold());
+    println!("{}", info.gradient(info_color).bold());
     funny_opening!();
 
     let config_path = opts
@@ -299,7 +337,8 @@ fn infer_batch_size(opts: &Opts, ulimit: usize) -> usize {
 mod tests {
     #[cfg(unix)]
     use super::{adjust_ulimit_size, infer_batch_size};
-    use super::{print_opening, Opts};
+    use super::{banner_colors, print_opening, Opts};
+    use colorful::Color;
 
     #[test]
     #[cfg(unix)]
@@ -373,5 +412,19 @@ mod tests {
         };
         // print opening should not panic
         print_opening(&opts);
+    }
+
+    #[test]
+    fn test_banner_colors_dark_terminal() {
+        let (banner, info) = banner_colors(false);
+        assert!(matches!(banner, Color::Green));
+        assert!(matches!(info, Color::Yellow));
+    }
+
+    #[test]
+    fn test_banner_colors_light_terminal() {
+        let (banner, info) = banner_colors(true);
+        assert!(matches!(banner, Color::DarkBlue));
+        assert!(matches!(info, Color::DarkOrange3a));
     }
 }
