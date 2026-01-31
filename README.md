@@ -56,11 +56,13 @@ Arch:
 |         <!--Installation Guide-->          |          <!--Documentation-->          |       <!--Discord-->        |
 | :----------------------------------------: | :------------------------------------: | :-------------------------: |
 | :book: [Installation Guide][toc-install] | :books: [Documentation][links-table-2] | :parrot: [Discord][discord] |
+|                                          | :penguin: [ARM Support](docs/arm-support.md) |                           |
 
 ## 🙋 Table of Contents
 
 - 📖 [Installation Guide][toc-install]
 - 🐋 [Docker Usage][toc-docker-usage]
+- 🐧 [ARM Support](docs/arm-support.md)
 - 🦜 [Discord][discord]
 - 🤸 [Usage][usage-1]
 
