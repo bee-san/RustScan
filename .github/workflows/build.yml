@@ -38,16 +38,17 @@ jobs:
             pkg_config_path: /usr/lib/x86_64-linux-gnu/pkgconfig
     steps:
       - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: actions/setup-rust@v1
+        with:
+          rust-version: stable
+          targets: ${{ matrix.target }}
+      - name: Install cross
+        uses: taiki-e/install-action@cross
       - name: Cache cargo & target directories
         uses: Swatinem/rust-cache@v2
       - name: Build binary
-        uses: houseabsolute/actions-rust-cross@v0
-        with:
-          command: build
-          target: ${{ matrix.target }}
-          args: "--locked --release"
-          strip: true
-          toolchain: stable
+        run: cross build --locked --release --target ${{ matrix.target }}
       - name: Build tar.gz for homebrew installs
         if: matrix.type == 'ubuntu-x64'
         run: |
@@ -68,6 +69,10 @@ jobs:
       IN_PIPELINE: true
     steps:
       - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: actions/setup-rust@v1
+        with:
+          rust-version: stable
       - name: Install cargo-deb
         run: cargo install -f cargo-deb
       - uses: awalsh128/cache-apt-pkgs-action@v1
@@ -91,16 +96,14 @@ jobs:
     if: github.ref == 'refs/heads/master'
     steps:
       - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: actions/setup-rust@v1
+        with:
+          rust-version: stable
       - name: Cache cargo & target directories
         uses: Swatinem/rust-cache@v2
       - name: Build binary
-        uses: houseabsolute/actions-rust-cross@v0
-        with:
-          command: build
-          target: x86_64-apple-darwin
-          args: "--locked --release"
-          strip: true
-          toolchain: stable
+        run: cargo build --locked --release --target x86_64-apple-darwin
       - name: Build tar.gz for homebrew installs
         run: |
           tar czf x86_64-macos-rustscan.tar.gz -C target/x86_64-apple-darwin/release rustscan
@@ -120,16 +123,14 @@ jobs:
     if: github.ref == 'refs/heads/master'
     steps:
       - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: actions/setup-rust@v1
+        with:
+          rust-version: stable
       - name: Cache cargo & target directories
         uses: Swatinem/rust-cache@v2
       - name: Build binary
-        uses: houseabsolute/actions-rust-cross@v0
-        with:
-          command: build
-          target: aarch64-apple-darwin
-          args: "--locked --release"
-          strip: true
-          toolchain: stable
+        run: cargo build --locked --release --target aarch64-apple-darwin
       - name: Build tar.gz for homebrew installs
         run: |
           tar czf aarch64-macos-rustscan.tar.gz -C target/aarch64-apple-darwin/release rustscan
@@ -163,16 +164,15 @@ jobs:
             path: target\i686-pc-windows-msvc\release\rustscan.exe
     steps:
       - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: actions/setup-rust@v1
+        with:
+          rust-version: stable
+          targets: ${{ matrix.target }}
       - name: Cache cargo & target directories
         uses: Swatinem/rust-cache@v2
       - name: Build binary
-        uses: houseabsolute/actions-rust-cross@v0
-        with:
-          command: build
-          target:  ${{ matrix.target }}
-          args: "--locked --release"
-          strip: true
-          toolchain: stable
+        run: cargo build --locked --release --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
