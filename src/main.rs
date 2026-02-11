@@ -12,6 +12,7 @@ use rustscan::{detail, funny_opening, output, warning};
 use colorful::{Color, Colorful};
 use futures::executor::block_on;
 use std::collections::HashMap;
+use std::io::IsTerminal;
 use std::net::IpAddr;
 use std::string::ToString;
 use std::time::Duration;
@@ -199,8 +200,17 @@ fn main() {
 ///
 /// Uses the terminal's reported background color luminance to determine
 /// if a light color scheme should be used. Returns `false` (dark theme)
-/// if detection fails, as most terminals use dark backgrounds.
+/// if detection fails or if not running in a real terminal, as most
+/// terminals use dark backgrounds.
 fn is_light_terminal() -> bool {
+    // Only attempt detection when running in a real terminal.
+    // Terminal-query implementations can block or emit control sequences
+    // when stdin/stdout are not TTYs (e.g., piped or redirected output).
+    if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
+        debug!("Not running in a TTY, defaulting to dark theme");
+        return false;
+    }
+
     match terminal_light::luma() {
         Ok(luma) => {
             debug!("Detected terminal luma: {luma:.2}");
