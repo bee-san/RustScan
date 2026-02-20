@@ -1,10 +1,12 @@
 name: Test
+
 on:
   pull_request:
     branches: [master]
   push:
     branches:
       - master
+ 
 jobs:
   test:
     name: Test Suite
@@ -13,16 +15,15 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         rust: [stable]
     runs-on: ${{ matrix.os }}
+
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
 
-      - name: Install stable toolchain
-        uses: actions-rs/toolchain@v1
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          profile: minimal
-          toolchain: ${{ matrix.rust }}
-          override: true
+          rust-version: ${{ matrix.rust }}
 
       - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
@@ -30,5 +31,5 @@ jobs:
       - name: Install Just
         uses: extractions/setup-just@v2
 
-      - name: Run just
+      - name: Run tests
         run: just test
