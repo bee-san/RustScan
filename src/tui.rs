@@ -20,6 +20,24 @@ macro_rules! warning {
     };
 }
 
+/// Prints detailed information messages with formatting.
+///
+/// This macro provides a standardized way to display detailed information
+/// during scanning operations. It supports both simple and complex formatting
+/// with accessibility and greppable output modes.
+///
+/// ## Variants
+///
+/// - `detail!(message)`: Simple detail message with blue `[~]` prefix
+/// - `detail!(message, greppable, accessible)`: Conditional output based on modes
+///
+/// ## Examples
+///
+/// ```rust
+/// # #[macro_use] extern crate rustscan;
+/// detail!("Starting port scan");
+/// detail!("Found 3 open ports", false, true);
+/// ```
 #[macro_export]
 macro_rules! detail {
     ($name:expr) => {
@@ -38,6 +56,29 @@ macro_rules! detail {
     };
 }
 
+/// Prints output messages with distinctive formatting.
+///
+/// This macro provides a standardized way to display important output
+/// information during scanning operations. It uses a bright green `[>]`
+/// prefix to indicate successful operations or important results.
+///
+/// ## Variants
+///
+/// - `output!(message)`: Simple output message with green `[>]` prefix
+/// - `output!(message, greppable, accessible)`: Conditional output based on modes
+///
+/// ## Output Modes
+///
+/// - **Greppable**: When true, suppresses formatted output for script parsing
+/// - **Accessible**: When true, removes ANSI color codes for screen readers
+///
+/// ## Examples
+///
+/// ```rust
+/// # #[macro_use] extern crate rustscan;
+/// output!("Scan completed successfully");
+/// output!("192.168.1.1:80 open", false, false);
+/// ```
 #[macro_export]
 macro_rules! output {
     ($name:expr) => {
@@ -64,6 +105,32 @@ macro_rules! output {
     };
 }
 
+/// Displays a random humorous quote to enhance user experience.
+///
+/// This macro provides entertainment value by displaying random quotes
+/// and messages when RustScan starts. It helps create a more engaging
+/// user experience while maintaining the tool's professional capabilities.
+///
+/// ## Features
+///
+/// - Random selection from a curated list of quotes
+/// - Mix of technical humor and community references  
+/// - Encourages community contribution
+/// - Light-hearted approach to security tooling
+///
+/// ## Usage
+///
+/// ```rust
+/// # #[macro_use] extern crate rustscan;
+/// funny_opening!(); // Displays a random quote
+/// ```
+///
+/// ## Quote Categories
+///
+/// - Performance comparisons with other tools
+/// - Hacker culture references
+/// - Community engagement messages
+/// - Technical humor and wordplay
 #[macro_export]
 macro_rules! funny_opening {
     // prints a funny quote / opening
