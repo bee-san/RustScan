@@ -40,6 +40,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Cache cargo & target directories
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
       - name: Build binary
         uses: houseabsolute/actions-rust-cross@v0
         with:

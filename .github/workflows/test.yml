@@ -10,25 +10,64 @@ jobs:
     name: Test Suite
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        rust: [stable]
+        include:
+          - os: ubuntu-latest
+            rust: stable
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            rust: stable
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            rust: stable
+            target: x86_64-pc-windows-msvc
+          # ARM64 testing on Ubuntu (GitHub-hosted runners support ARM64)
+          - os: ubuntu-latest
+            rust: stable
+            target: aarch64-unknown-linux-gnu
+            cross: true
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
 
-      - name: Install stable toolchain
-        uses: actions-rs/toolchain@v1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
         with:
-          profile: minimal
           toolchain: ${{ matrix.rust }}
-          override: true
+          targets: ${{ matrix.target }}
 
       - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       - name: Install Just
         uses: extractions/setup-just@v2
 
-      - name: Run just
+      - name: Install cross-compilation tools
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+
+      - name: Run tests (native)
+        if: "!matrix.cross"
         run: just test
+
+      - name: Run tests (cross-compiled)
+        if: matrix.cross
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+          AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
+          PKG_CONFIG_ALLOW_CROSS: 1
+        run: |
+          # First ensure we can build for the target
+          cargo build --target ${{ matrix.target }} --release
+          # Compile tests but don't run them (since we can't execute ARM64 on x86_64)
+          cargo test --target ${{ matrix.target }} --lib --no-run
+          # Verify clippy works for cross-compilation
+          cargo clippy --target ${{ matrix.target }} -- --deny warnings
+          # Verify formatting (platform agnostic)  
+          cargo fmt --check
