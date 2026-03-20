@@ -161,6 +161,16 @@ pub struct Opts {
     /// UDP scanning mode, finds UDP ports that send back responses
     #[arg(long)]
     pub udp: bool,
+
+    /// Path to a folder containing .txt files, each representing a site to scan.
+    /// Each file should contain one IP address or CIDR per line.
+    /// The filename (without .txt) is used as the site name.
+    #[arg(short = 'f', long = "folder", conflicts_with = "addresses")]
+    pub folder: Option<PathBuf>,
+
+    /// Output directory for multi-site scan results.
+    #[arg(short = 'o', long = "output-dir", default_value = "rustscan_results")]
+    pub output_dir: PathBuf,
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -247,6 +257,8 @@ impl Default for Opts {
             exclude_ports: None,
             exclude_addresses: None,
             udp: false,
+            folder: None,
+            output_dir: PathBuf::from("rustscan_results"),
         }
     }
 }

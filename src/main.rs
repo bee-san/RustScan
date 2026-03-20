@@ -66,6 +66,17 @@ fn main() {
         print_opening(&opts);
     }
 
+    // Multi-site folder scan mode
+    if opts.folder.is_some() {
+        #[cfg(unix)]
+        let batch_size: usize = infer_batch_size(&opts, adjust_ulimit_size(&opts));
+        #[cfg(not(unix))]
+        let batch_size: usize = AVERAGE_BATCH_SIZE;
+
+        rustscan::site_scan::run_folder_scan(&opts, batch_size);
+        return;
+    }
+
     let ips: Vec<IpAddr> = parse_addresses(&opts);
 
     if ips.is_empty() {

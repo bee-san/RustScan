@@ -55,4 +55,6 @@ pub mod scripts;
 
 pub mod address;
 
+pub mod site_scan;
+
 pub mod generated;
