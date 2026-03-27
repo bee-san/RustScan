@@ -13,11 +13,34 @@ use colored::Colorize;
 use futures::stream::FuturesUnordered;
 use std::collections::BTreeMap;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     net::{IpAddr, Shutdown, SocketAddr},
     num::NonZeroU8,
+    sync::Arc,
     time::Duration,
 };
+
+/// UDP payload lookup: port -> payload bytes
+///
+/// `get_parsed_data()` returns a `&'static BTreeMap<...>`, so we can store
+/// references to the payload bytes without cloning them.
+#[doc(hidden)]
+pub type UdpPayloadLookup = HashMap<u16, &'static [u8]>;
+
+#[doc(hidden)]
+pub fn build_udp_payload_lookup(udp_map: &'static BTreeMap<Vec<u16>, Vec<u8>>) -> UdpPayloadLookup {
+    let mut lookup: UdpPayloadLookup = HashMap::new();
+
+    for (ports, payload_vec) in udp_map.iter() {
+        let payload: &'static [u8] = payload_vec.as_slice();
+        for &port in ports.iter() {
+            // Preserve existing behavior: if duplicates exist, last insert wins.
+            lookup.insert(port, payload);
+        }
+    }
+
+    lookup
+}
 
 /// The class for the scanner
 /// IP is data type IpAddr and is the IP address
@@ -81,11 +104,19 @@ impl Scanner {
         let mut open_sockets: Vec<SocketAddr> = Vec::new();
         let mut ftrs = FuturesUnordered::new();
         let mut errors: HashSet<String> = HashSet::new();
-        let udp_map = get_parsed_data();
+
+        // Build UDP payload lookup once (only if we are scanning UDP).
+        // This avoids cloning a big map into every spawned future and turns
+        // payload selection from O(n) to O(1).
+        let udp_payloads: Option<Arc<UdpPayloadLookup>> = if self.udp {
+            Some(Arc::new(build_udp_payload_lookup(get_parsed_data())))
+        } else {
+            None
+        };
 
         for _ in 0..self.batch_size {
             if let Some(socket) = socket_iterator.next() {
-                ftrs.push(self.scan_socket(socket, udp_map.clone()));
+                ftrs.push(self.scan_socket(socket, udp_payloads.clone()));
             } else {
                 break;
             }
@@ -99,7 +130,7 @@ impl Scanner {
 
         while let Some(result) = ftrs.next().await {
             if let Some(socket) = socket_iterator.next() {
-                ftrs.push(self.scan_socket(socket, udp_map.clone()));
+                ftrs.push(self.scan_socket(socket, udp_payloads.clone()));
             }
 
             match result {
@@ -134,10 +165,10 @@ impl Scanner {
     async fn scan_socket(
         &self,
         socket: SocketAddr,
-        udp_map: BTreeMap<Vec<u16>, Vec<u8>>,
+        udp_payloads: Option<Arc<UdpPayloadLookup>>,
     ) -> io::Result<SocketAddr> {
         if self.udp {
-            return self.scan_udp_socket(socket, udp_map).await;
+            return self.scan_udp_socket(socket, udp_payloads).await;
         }
 
         let tries = self.tries.get();
@@ -175,18 +206,16 @@ impl Scanner {
     async fn scan_udp_socket(
         &self,
         socket: SocketAddr,
-        udp_map: BTreeMap<Vec<u16>, Vec<u8>>,
+        udp_payloads: Option<Arc<UdpPayloadLookup>>,
     ) -> io::Result<SocketAddr> {
-        let mut payload: Vec<u8> = Vec::new();
-        for (key, value) in udp_map {
-            if key.contains(&socket.port()) {
-                payload = value;
-            }
-        }
+        let payload: &[u8] = udp_payloads
+            .as_ref()
+            .and_then(|m| m.get(&socket.port()).copied())
+            .unwrap_or(b"");
 
         let tries = self.tries.get();
         for _ in 1..=tries {
-            match self.udp_scan(socket, &payload, self.timeout).await {
+            match self.udp_scan(socket, payload, self.timeout).await {
                 Ok(true) => return Ok(socket),
                 Ok(false) => continue,
                 Err(e) => return Err(e),
