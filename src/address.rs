@@ -431,4 +431,24 @@ mod tests {
 
         assert!(lookup.iter().next().is_some());
     }
+    #[test]
+fn test_parse_addresses_mixed_valid_invalid() {
+        let opts = Opts {
+            addresses: vec![
+                "192.168.1.1".to_owned(),  // Valid IP
+                "invalid_host".to_owned(), // Invalid domain
+                "256.256.256.256".to_owned(), // Invalid IP
+                "10.0.0.1".to_owned(), // Valid IP
+            ],
+            ..Default::default()
+        };
+        let ips = parse_addresses(&opts);
+
+        // Expected valid IPs only
+        assert_eq!(ips, vec![
+            Ipv4Addr::new(192, 168, 1, 1),
+            Ipv4Addr::new(10, 0, 0, 1)
+        ]);
+    }
+
 }
