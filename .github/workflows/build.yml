@@ -37,7 +37,7 @@ jobs:
             path: target/aarch64-unknown-linux-gnu/release/rustscan
             pkg_config_path: /usr/lib/x86_64-linux-gnu/pkgconfig
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Cache cargo & target directories
         uses: Swatinem/rust-cache@v2
       - name: Build binary
@@ -67,7 +67,7 @@ jobs:
     env:
       IN_PIPELINE: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install cargo-deb
         run: cargo install -f cargo-deb
       - uses: awalsh128/cache-apt-pkgs-action@v1
@@ -90,7 +90,7 @@ jobs:
     runs-on: macos-latest
     if: github.ref == 'refs/heads/master'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Cache cargo & target directories
         uses: Swatinem/rust-cache@v2
       - name: Build binary
@@ -119,7 +119,7 @@ jobs:
     runs-on: macos-latest
     if: github.ref == 'refs/heads/master'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Cache cargo & target directories
         uses: Swatinem/rust-cache@v2
       - name: Build binary
@@ -162,7 +162,7 @@ jobs:
             name: x86-windows-rustscan.exe
             path: target\i686-pc-windows-msvc\release\rustscan.exe
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Cache cargo & target directories
         uses: Swatinem/rust-cache@v2
       - name: Build binary
