@@ -295,11 +295,18 @@ impl Config {
     pub fn read(custom_config_path: Option<PathBuf>) -> Self {
         let mut content = String::new();
         let config_path = custom_config_path.unwrap_or_else(|| {
-            let path = default_config_path();
-            match path.exists() {
-                true => path,
-                false => old_default_config_path(),
+            // Try the XDG-idiomatic location first, then fall back to legacy
+            // paths so existing users keep working unchanged.
+            for path in [
+                default_config_path(),
+                legacy_dot_config_path(),
+                old_default_config_path(),
+            ] {
+                if path.exists() {
+                    return path;
+                }
             }
+            default_config_path()
         });
 
         if config_path.exists() {
@@ -321,8 +328,21 @@ impl Config {
     }
 }
 
-/// Constructs default path to config toml
+/// Returns the preferred config file path: `$XDG_CONFIG_HOME/rustscan/config.toml`
+/// on Linux (with the usual `~/.config` fallback when the variable is unset),
+/// and the platform-equivalent `dirs::config_dir()` location on macOS / Windows.
 pub fn default_config_path() -> PathBuf {
+    let Some(mut config_path) = dirs::config_dir() else {
+        panic!("Could not infer config file path.");
+    };
+    config_path.push("rustscan");
+    config_path.push("config.toml");
+    config_path
+}
+
+/// Returns the transitional `$XDG_CONFIG_HOME/.rustscan.toml` path that older
+/// builds wrote to. Kept readable for backwards compatibility.
+pub fn legacy_dot_config_path() -> PathBuf {
     let Some(mut config_path) = dirs::config_dir() else {
         panic!("Could not infer config file path.");
     };
