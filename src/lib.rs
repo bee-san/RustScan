@@ -32,6 +32,7 @@
 //!         true, // accessible, should the output be A11Y compliant?
 //!         vec![9000], // What ports should RustScan exclude?
 //!         false, // is this a UDP scan?
+//!         false, // Output closed ports?
 //!     );
 //!
 //!     let scan_result = block_on(scanner.run());
