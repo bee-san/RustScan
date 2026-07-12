@@ -11,7 +11,7 @@ macro_rules! warning {
     };
     ($name:expr, $greppable:expr, $accessible:expr) => {
         // if not greppable then print, otherwise no else statement so do not print.
-        if !$greppable {
+        if !$crate::SUPPRESS_STDOUT.load(std::sync::atomic::Ordering::Relaxed) && !$greppable {
             if $accessible {
                 // Don't print the ascii art
                 println!("{}", $name);
@@ -31,7 +31,7 @@ macro_rules! detail {
     };
     ($name:expr, $greppable:expr, $accessible:expr) => {
         // if not greppable then print, otherwise no else statement so do not print.
-        if !$greppable {
+        if !$crate::SUPPRESS_STDOUT.load(std::sync::atomic::Ordering::Relaxed) && !$greppable {
             if $accessible {
                 // Don't print the ascii art
                 println!("{}", $name);
@@ -55,7 +55,7 @@ macro_rules! output {
     };
     ($name:expr, $greppable:expr, $accessible:expr) => {
         // if not greppable then print, otherwise no else statement so do not print.
-        if !$greppable {
+        if !$crate::SUPPRESS_STDOUT.load(std::sync::atomic::Ordering::Relaxed) && !$greppable {
             if $accessible {
                 // Don't print the ascii art
                 println!("{}", $name);

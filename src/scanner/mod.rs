@@ -298,7 +298,7 @@ impl Scanner {
 
     /// Formats and prints the port status
     fn fmt_ports(&self, socket: SocketAddr) {
-        if !self.greppable {
+        if !crate::SUPPRESS_STDOUT.load(std::sync::atomic::Ordering::Relaxed) && !self.greppable {
             if self.accessible {
                 println!("Open {socket}");
             } else {
