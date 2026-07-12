@@ -315,7 +315,7 @@ impl Config {
                 if !crate::SUPPRESS_STDOUT.load(std::sync::atomic::Ordering::Relaxed) {
                     println!("Found {e} in configuration file.\nAborting scan.\n");
                 }
-                panic!("Found {} in configuration file.\nAborting scan.", e);
+                std::process::exit(1);
             }
         };
 
