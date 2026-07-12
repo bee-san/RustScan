@@ -41,6 +41,28 @@
 //! ```
 #![allow(clippy::needless_doctest_main)]
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// When `true`, all stdout output from the library is suppressed.
+/// The CLI entry point (`main.rs`) never sets this, so it prints normally.
+/// Library consumers should call [`suppress_output()`] to silence output.
+#[doc(hidden)]
+pub static SUPPRESS_STDOUT: AtomicBool = AtomicBool::new(false);
+
+/// Suppress all stdout output from the library.
+///
+/// Call this once before using the scanner when using RustScan as a library
+/// dependency to prevent noisy terminal output. Has no effect on `log`
+/// crate logging (which is controlled by `RUST_LOG`).
+///
+/// ```ignore
+/// rustscan::suppress_output();
+/// // ... construct and run the scanner normally
+/// ```
+pub fn suppress_output() {
+    SUPPRESS_STDOUT.store(true, Ordering::Relaxed);
+}
+
 pub mod tui;
 
 pub mod input;

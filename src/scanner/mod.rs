@@ -288,7 +288,9 @@ impl Scanner {
                 }
             }
             Err(e) => {
-                println!("Err E binding sock {e:?}");
+                if !crate::SUPPRESS_STDOUT.load(std::sync::atomic::Ordering::Relaxed) {
+                    eprintln!("Err E binding sock {e:?}");
+                }
                 Err(e)
             }
         }
