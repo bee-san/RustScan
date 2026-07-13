@@ -312,7 +312,9 @@ impl Config {
         let config: Config = match toml::from_str(&content) {
             Ok(config) => config,
             Err(e) => {
-                println!("Found {e} in configuration file.\nAborting scan.\n");
+                if !crate::SUPPRESS_STDOUT.load(std::sync::atomic::Ordering::Relaxed) {
+                    println!("Found {e} in configuration file.\nAborting scan.\n");
+                }
                 std::process::exit(1);
             }
         };

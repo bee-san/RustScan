@@ -41,6 +41,44 @@
 //! ```
 #![allow(clippy::needless_doctest_main)]
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// When `true`, all stdout output from the library is suppressed.
+/// Defaults to `true` so that library consumers get silent output.
+/// The CLI entry point (`main.rs`) calls [`enable_output()`] at startup
+/// to restore normal terminal printing.
+#[doc(hidden)]
+pub static SUPPRESS_STDOUT: AtomicBool = AtomicBool::new(true);
+
+/// Suppress all stdout output from the library.
+///
+/// Output is suppressed by default. Call this only after calling
+/// [`enable_output()`] if you need to re-silence output mid-session.
+/// Has no effect on `log` crate logging (controlled by `RUST_LOG`).
+///
+/// ```ignore
+/// rustscan::enable_output();
+/// // ... print something ...
+/// rustscan::suppress_output();
+/// // ... output is silent again
+/// ```
+pub fn suppress_output() {
+    SUPPRESS_STDOUT.store(true, Ordering::Relaxed);
+}
+
+/// Enable stdout output from the library.
+///
+/// Output is suppressed by default. The CLI calls this at startup;
+/// library consumers should call this only if they want terminal output.
+///
+/// ```ignore
+/// rustscan::enable_output();
+/// // ... output will now print to stdout
+/// ```
+pub fn enable_output() {
+    SUPPRESS_STDOUT.store(false, Ordering::Relaxed);
+}
+
 pub mod tui;
 
 pub mod input;
@@ -56,3 +94,43 @@ pub mod scripts;
 pub mod address;
 
 pub mod generated;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    /// Sequential test covering all toggle behaviours on the shared
+    /// `SUPPRESS_STDOUT` static.  Individual `#[test]` functions would
+    /// race under parallel test execution; a single test runs them in
+    /// the order shown and is safe with any `--test-threads` setting.
+    ///
+    /// The actual stdout-suppression effect is verified by the
+    /// integration tests in tests/stdout_suppression.rs, which spawn
+    /// subprocesses and therefore have no shared state.
+    #[test]
+    fn toggle_flag_behavior() {
+        // Save original value to avoid contaminating parallel unit tests
+        // that share the process-global AtomicBool.
+        let original = SUPPRESS_STDOUT.load(Ordering::Relaxed);
+
+        // --- suppress_output sets the flag ---
+        SUPPRESS_STDOUT.store(false, Ordering::Relaxed);
+        suppress_output();
+        assert!(SUPPRESS_STDOUT.load(Ordering::Relaxed));
+
+        // --- suppress_output is idempotent ---
+        SUPPRESS_STDOUT.store(false, Ordering::Relaxed);
+        suppress_output();
+        suppress_output();
+        assert!(SUPPRESS_STDOUT.load(Ordering::Relaxed));
+
+        // --- enable_output clears the flag ---
+        SUPPRESS_STDOUT.store(true, Ordering::Relaxed);
+        enable_output();
+        assert!(!SUPPRESS_STDOUT.load(Ordering::Relaxed));
+
+        // Restore original value so parallel tests see the expected state.
+        SUPPRESS_STDOUT.store(original, Ordering::Relaxed);
+    }
+}
