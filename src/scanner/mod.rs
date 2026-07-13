@@ -37,6 +37,7 @@ pub struct Scanner {
     accessible: bool,
     exclude_ports: Vec<u16>,
     udp: bool,
+    print_open_ports: bool,
 }
 
 // Allowing too many arguments for clippy.
@@ -63,7 +64,17 @@ impl Scanner {
             accessible,
             exclude_ports,
             udp,
+            print_open_ports: false,
         }
+    }
+
+    /// Enables the CLI's incremental open-port output.
+    ///
+    /// Library callers are quiet by default and can inspect the sockets returned by [`Self::run`].
+    #[must_use]
+    pub fn with_open_port_output(mut self) -> Self {
+        self.print_open_ports = true;
+        self
     }
 
     /// Runs scan_range with chunk sizes
@@ -288,7 +299,7 @@ impl Scanner {
                 }
             }
             Err(e) => {
-                println!("Err E binding sock {e:?}");
+                debug!("Error binding UDP socket: {e:?}");
                 Err(e)
             }
         }
@@ -296,7 +307,7 @@ impl Scanner {
 
     /// Formats and prints the port status
     fn fmt_ports(&self, socket: SocketAddr) {
-        if !self.greppable {
+        if self.print_open_ports && !self.greppable {
             if self.accessible {
                 println!("Open {socket}");
             } else {
@@ -312,6 +323,40 @@ mod tests {
     use crate::input::{PortRange, ScanOrder};
     use async_std::task::block_on;
     use std::{net::IpAddr, time::Duration};
+
+    fn test_scanner() -> Scanner {
+        let addrs = vec!["127.0.0.1".parse::<IpAddr>().unwrap()];
+        let strategy = PortStrategy::pick(
+            &Some(PortRange { start: 1, end: 1 }),
+            None,
+            ScanOrder::Serial,
+        );
+        Scanner::new(
+            &addrs,
+            1,
+            Duration::from_millis(100),
+            1,
+            false,
+            strategy,
+            false,
+            Vec::new(),
+            false,
+        )
+    }
+
+    #[test]
+    fn library_scanner_is_quiet_by_default() {
+        let scanner = test_scanner();
+
+        assert!(!scanner.print_open_ports);
+    }
+
+    #[test]
+    fn cli_can_enable_open_port_output() {
+        let scanner = test_scanner().with_open_port_output();
+
+        assert!(scanner.print_open_ports);
+    }
 
     #[test]
     fn scanner_runs() {
