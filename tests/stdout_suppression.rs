@@ -32,21 +32,32 @@ fn build_example(name: &str) -> PathBuf {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
-        if line.contains("\"reason\":\"compiler-artifact\"")
-            && line.contains(&format!("\"name\":\"{}\"", name))
+        let value: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        if value.get("reason").and_then(|v| v.as_str()) != Some("compiler-artifact") {
+            continue;
+        }
+
+        if value
+            .get("target")
+            .and_then(|v| v.get("name"))
+            .and_then(|v| v.as_str())
+            != Some(name)
         {
-            if let Some(start) = line.find("\"executable\":\"") {
-                let start = start + "\"executable\":\"".len();
-                if let Some(end) = line[start..].find('"') {
-                    let path = PathBuf::from(&line[start..start + end]);
-                    assert!(
-                        path.exists(),
-                        "cargo-reported binary does not exist: {}",
-                        path.display()
-                    );
-                    return path;
-                }
-            }
+            continue;
+        }
+
+        if let Some(executable) = value.get("executable").and_then(|v| v.as_str()) {
+            let path = PathBuf::from(executable);
+            assert!(
+                path.exists(),
+                "cargo-reported binary does not exist: {}",
+                path.display()
+            );
+            return path;
         }
     }
 
