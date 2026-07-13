@@ -100,35 +100,30 @@ mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
 
-    /// Unit test: verify the flag mechanism toggles correctly.
-    /// The actual stdout suppression effect is verified by the
-    /// integration test in tests/stdout_suppression.rs.
+    /// Sequential test covering all toggle behaviours on the shared
+    /// `SUPPRESS_STDOUT` static.  Individual `#[test]` functions would
+    /// race under parallel test execution; a single test runs them in
+    /// the order shown and is safe with any `--test-threads` setting.
+    ///
+    /// The actual stdout-suppression effect is verified by the
+    /// integration tests in tests/stdout_suppression.rs, which spawn
+    /// subprocesses and therefore have no shared state.
     #[test]
-    fn suppress_output_sets_flag() {
+    fn toggle_flag_behavior() {
+        // --- suppress_output sets the flag ---
         SUPPRESS_STDOUT.store(false, Ordering::Relaxed);
         suppress_output();
         assert!(SUPPRESS_STDOUT.load(Ordering::Relaxed));
-    }
 
-    #[test]
-    fn suppress_output_is_idempotent() {
+        // --- suppress_output is idempotent ---
         SUPPRESS_STDOUT.store(false, Ordering::Relaxed);
         suppress_output();
         suppress_output();
         assert!(SUPPRESS_STDOUT.load(Ordering::Relaxed));
-    }
 
-    #[test]
-    fn enable_output_clears_flag() {
+        // --- enable_output clears the flag ---
         SUPPRESS_STDOUT.store(true, Ordering::Relaxed);
         enable_output();
         assert!(!SUPPRESS_STDOUT.load(Ordering::Relaxed));
-    }
-
-    #[test]
-    fn default_is_suppressed() {
-        // Reset to default and verify silent-by-default behavior.
-        SUPPRESS_STDOUT.store(true, Ordering::Relaxed);
-        assert!(SUPPRESS_STDOUT.load(Ordering::Relaxed));
     }
 }

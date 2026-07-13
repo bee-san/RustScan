@@ -7,11 +7,10 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Locate the compiled `stdout_check` example binary.
-fn example_binary() -> PathBuf {
-    // Cargo sets CARGO_BIN_EXE_<name> for bin targets; examples may
-    // also be available under this key depending on the Cargo version.
-    if let Ok(p) = std::env::var("CARGO_BIN_EXE_stdout_check") {
+/// Locate a compiled example binary by name.
+fn example_binary(name: &str) -> PathBuf {
+    let env_key = format!("CARGO_BIN_EXE_{name}");
+    if let Ok(p) = std::env::var(&env_key) {
         let path = PathBuf::from(p);
         if path.exists() {
             return path;
@@ -29,26 +28,23 @@ fn example_binary() -> PathBuf {
         .join("target")
         .join(profile)
         .join("examples")
-        .join("stdout_check")
+        .join(name)
 }
 
-/// Build the example if it hasn't been built yet.
-fn ensure_example_built() {
+/// Build an example by name if it hasn't been built yet.
+fn ensure_example_built(name: &str) {
     let status = Command::new("cargo")
-        .args(["build", "--example", "stdout_check"])
+        .args(["build", "--example", name])
         .status()
-        .expect("failed to run cargo build --example stdout_check");
-    assert!(
-        status.success(),
-        "cargo build --example stdout_check failed"
-    );
+        .expect("failed to run cargo build");
+    assert!(status.success(), "cargo build --example {} failed", name);
 }
 
 #[test]
 fn suppress_output_actually_silences_macro_output() {
-    ensure_example_built();
+    ensure_example_built("stdout_check");
 
-    let bin = example_binary();
+    let bin = example_binary("stdout_check");
     assert!(
         bin.exists(),
         "example binary not found at {}; run `cargo build --example stdout_check`",
@@ -99,6 +95,51 @@ fn suppress_output_actually_silences_macro_output() {
     assert!(
         !stdout.contains("POST_SUPPRESS_OUTPUT"),
         "POST_SUPPRESS_OUTPUT leaked into stdout:\n{}",
+        stdout
+    );
+}
+
+/// Fresh-process test: verify the library is silent by default.
+/// The `default_silent` example does NOT call `enable_output()`,
+/// so all macro output should be suppressed by the initialiser.
+#[test]
+fn default_silent_output_is_suppressed() {
+    ensure_example_built("default_silent");
+
+    let bin = example_binary("default_silent");
+    assert!(
+        bin.exists(),
+        "example binary not found at {}; run `cargo build --example default_silent`",
+        bin.display()
+    );
+
+    let output = Command::new(&bin)
+        .output()
+        .expect("failed to spawn default_silent example");
+
+    assert!(
+        output.status.success(),
+        "example exited with {}: stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Default-silent markers must NOT appear — library is silent by default.
+    assert!(
+        !stdout.contains("DEFAULT_SILENT_WARNING"),
+        "DEFAULT_SILENT_WARNING leaked into stdout (library should be silent by default):\n{}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("DEFAULT_SILENT_DETAIL"),
+        "DEFAULT_SILENT_DETAIL leaked into stdout:\n{}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("DEFAULT_SILENT_OUTPUT"),
+        "DEFAULT_SILENT_OUTPUT leaked into stdout:\n{}",
         stdout
     );
 }
