@@ -110,6 +110,10 @@ mod tests {
     /// subprocesses and therefore have no shared state.
     #[test]
     fn toggle_flag_behavior() {
+        // Save original value to avoid contaminating parallel unit tests
+        // that share the process-global AtomicBool.
+        let original = SUPPRESS_STDOUT.load(Ordering::Relaxed);
+
         // --- suppress_output sets the flag ---
         SUPPRESS_STDOUT.store(false, Ordering::Relaxed);
         suppress_output();
@@ -125,5 +129,8 @@ mod tests {
         SUPPRESS_STDOUT.store(true, Ordering::Relaxed);
         enable_output();
         assert!(!SUPPRESS_STDOUT.load(Ordering::Relaxed));
+
+        // Restore original value so parallel tests see the expected state.
+        SUPPRESS_STDOUT.store(original, Ordering::Relaxed);
     }
 }

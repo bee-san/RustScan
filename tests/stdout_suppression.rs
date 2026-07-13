@@ -7,49 +7,58 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Locate a compiled example binary by name.
-fn example_binary(name: &str) -> PathBuf {
-    let env_key = format!("CARGO_BIN_EXE_{name}");
-    if let Ok(p) = std::env::var(&env_key) {
-        let path = PathBuf::from(p);
-        if path.exists() {
-            return path;
+/// Build an example and return the path to the compiled binary.
+///
+/// Uses `cargo build --message-format=json` so that the profile matches
+/// the test binary (`cfg!(debug_assertions)`) and the returned path
+/// respects `CARGO_TARGET_DIR` and workspace layouts.
+fn build_example(name: &str) -> PathBuf {
+    let mut args: Vec<&str> = vec!["build", "--example", name, "--message-format=json"];
+    if !cfg!(debug_assertions) {
+        args.push("--release");
+    }
+
+    let output = Command::new("cargo")
+        .args(&args)
+        .output()
+        .expect("failed to run cargo build");
+
+    assert!(
+        output.status.success(),
+        "cargo build --example {} failed\nstderr:\n{}",
+        name,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if line.contains("\"reason\":\"compiler-artifact\"")
+            && line.contains(&format!("\"name\":\"{}\"", name))
+        {
+            if let Some(start) = line.find("\"executable\":\"") {
+                let start = start + "\"executable\":\"".len();
+                if let Some(end) = line[start..].find('"') {
+                    let path = PathBuf::from(&line[start..start + end]);
+                    assert!(
+                        path.exists(),
+                        "cargo-reported binary does not exist: {}",
+                        path.display()
+                    );
+                    return path;
+                }
+            }
         }
     }
 
-    let manifest =
-        std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").into());
-    let profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-    PathBuf::from(manifest)
-        .join("target")
-        .join(profile)
-        .join("examples")
-        .join(format!("{}{}", name, std::env::consts::EXE_SUFFIX))
-}
-
-/// Build an example by name if it hasn't been built yet.
-fn ensure_example_built(name: &str) {
-    let status = Command::new("cargo")
-        .args(["build", "--example", name])
-        .status()
-        .expect("failed to run cargo build");
-    assert!(status.success(), "cargo build --example {} failed", name);
+    panic!(
+        "could not find executable for example '{}' in cargo build output",
+        name
+    );
 }
 
 #[test]
 fn suppress_output_actually_silences_macro_output() {
-    ensure_example_built("stdout_check");
-
-    let bin = example_binary("stdout_check");
-    assert!(
-        bin.exists(),
-        "example binary not found at {}; run `cargo build --example stdout_check`",
-        bin.display()
-    );
+    let bin = build_example("stdout_check");
 
     let output = Command::new(&bin)
         .output()
@@ -104,14 +113,7 @@ fn suppress_output_actually_silences_macro_output() {
 /// so all macro output should be suppressed by the initialiser.
 #[test]
 fn default_silent_output_is_suppressed() {
-    ensure_example_built("default_silent");
-
-    let bin = example_binary("default_silent");
-    assert!(
-        bin.exists(),
-        "example binary not found at {}; run `cargo build --example default_silent`",
-        bin.display()
-    );
+    let bin = build_example("default_silent");
 
     let output = Command::new(&bin)
         .output()
