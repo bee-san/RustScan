@@ -28,7 +28,7 @@ fn example_binary(name: &str) -> PathBuf {
         .join("target")
         .join(profile)
         .join("examples")
-        .join(name)
+        .join(format!("{}{}", name, std::env::consts::EXE_SUFFIX))
 }
 
 /// Build an example by name if it hasn't been built yet.
