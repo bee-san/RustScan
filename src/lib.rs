@@ -78,3 +78,43 @@ pub mod scripts;
 pub mod address;
 
 pub mod generated;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn suppress_output_defaults_to_false() {
+        // Ensure stdout is NOT suppressed by default (CLI mode).
+        // Reset atomics can carry state across tests, so explicitly store false.
+        SUPPRESS_STDOUT.store(false, Ordering::Relaxed);
+        assert!(
+            !SUPPRESS_STDOUT.load(Ordering::Relaxed),
+            "SUPPRESS_STDOUT should default to false so CLI prints normally"
+        );
+    }
+
+    #[test]
+    fn suppress_output_disables_stdout() {
+        // Verify suppress_output() flips the guard to true.
+        SUPPRESS_STDOUT.store(false, Ordering::Relaxed);
+        suppress_output();
+        assert!(
+            SUPPRESS_STDOUT.load(Ordering::Relaxed),
+            "suppress_output() should set SUPPRESS_STDOUT to true"
+        );
+    }
+
+    #[test]
+    fn suppress_output_is_callable_multiple_times() {
+        // Calling suppress_output() repeatedly must remain idempotent.
+        SUPPRESS_STDOUT.store(false, Ordering::Relaxed);
+        suppress_output();
+        suppress_output();
+        assert!(
+            SUPPRESS_STDOUT.load(Ordering::Relaxed),
+            "repeated calls to suppress_output() must leave SUPPRESS_STDOUT true"
+        );
+    }
+}
