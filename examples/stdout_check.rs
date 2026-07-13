@@ -1,6 +1,9 @@
 /// Example that exercises output macros with and without suppress_output().
 /// Built and spawned by the integration test in tests/stdout_suppression.rs.
 fn main() {
+    // Enable output first (it is suppressed by default for library consumers).
+    rustscan::enable_output();
+
     // Before suppression: these markers should appear in stdout.
     rustscan::warning!("PRE_SUPPRESS_WARNING");
     rustscan::detail!("PRE_SUPPRESS_DETAIL");

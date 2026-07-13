@@ -44,23 +44,39 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// When `true`, all stdout output from the library is suppressed.
-/// The CLI entry point (`main.rs`) never sets this, so it prints normally.
-/// Library consumers should call [`suppress_output()`] to silence output.
+/// Defaults to `true` so that library consumers get silent output.
+/// The CLI entry point (`main.rs`) calls [`enable_output()`] at startup
+/// to restore normal terminal printing.
 #[doc(hidden)]
-pub static SUPPRESS_STDOUT: AtomicBool = AtomicBool::new(false);
+pub static SUPPRESS_STDOUT: AtomicBool = AtomicBool::new(true);
 
 /// Suppress all stdout output from the library.
 ///
-/// Call this once before using the scanner when using RustScan as a library
-/// dependency to prevent noisy terminal output. Has no effect on `log`
-/// crate logging (which is controlled by `RUST_LOG`).
+/// Output is suppressed by default. Call this only after calling
+/// [`enable_output()`] if you need to re-silence output mid-session.
+/// Has no effect on `log` crate logging (controlled by `RUST_LOG`).
 ///
 /// ```ignore
+/// rustscan::enable_output();
+/// // ... print something ...
 /// rustscan::suppress_output();
-/// // ... construct and run the scanner normally
+/// // ... output is silent again
 /// ```
 pub fn suppress_output() {
     SUPPRESS_STDOUT.store(true, Ordering::Relaxed);
+}
+
+/// Enable stdout output from the library.
+///
+/// Output is suppressed by default. The CLI calls this at startup;
+/// library consumers should call this only if they want terminal output.
+///
+/// ```ignore
+/// rustscan::enable_output();
+/// // ... output will now print to stdout
+/// ```
+pub fn enable_output() {
+    SUPPRESS_STDOUT.store(false, Ordering::Relaxed);
 }
 
 pub mod tui;
@@ -99,6 +115,20 @@ mod tests {
         SUPPRESS_STDOUT.store(false, Ordering::Relaxed);
         suppress_output();
         suppress_output();
+        assert!(SUPPRESS_STDOUT.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn enable_output_clears_flag() {
+        SUPPRESS_STDOUT.store(true, Ordering::Relaxed);
+        enable_output();
+        assert!(!SUPPRESS_STDOUT.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn default_is_suppressed() {
+        // Reset to default and verify silent-by-default behavior.
+        SUPPRESS_STDOUT.store(true, Ordering::Relaxed);
         assert!(SUPPRESS_STDOUT.load(Ordering::Relaxed));
     }
 }

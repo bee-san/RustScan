@@ -35,6 +35,9 @@ extern crate log;
 /// Faster Nmap scanning with Rust
 /// If you're looking for the actual scanning, check out the module Scanner
 fn main() {
+    // Enable stdout output for CLI usage (suppressed by default for library consumers).
+    rustscan::enable_output();
+
     #[cfg(not(unix))]
     let _ = ansi_term::enable_ansi_support();
 
