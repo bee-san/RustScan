@@ -17,6 +17,7 @@ use std::string::ToString;
 use std::time::Duration;
 
 use rustscan::address::parse_addresses;
+use rustscan::scanner::PortStatus;
 
 extern crate colorful;
 extern crate dirs;
@@ -89,10 +90,11 @@ fn main() {
         Duration::from_millis(opts.timeout.into()),
         opts.tries,
         opts.greppable,
-        PortStrategy::pick(&opts.range, opts.ports, opts.scan_order),
+        PortStrategy::pick(&opts.range, opts.clone().ports, opts.scan_order),
         opts.accessible,
-        opts.exclude_ports.unwrap_or_default(),
+        opts.exclude_ports.clone().unwrap_or_default(),
         opts.udp,
+        opts.closed,
     );
     debug!("Scanner finished building: {scanner:?}");
 
@@ -101,17 +103,28 @@ fn main() {
     portscan_bench.end();
     benchmarks.push(portscan_bench);
 
-    let mut ports_per_ip = HashMap::new();
+    let mut open_ports_per_ip = HashMap::new();
+    let mut closed_ports_per_ip = HashMap::new();
 
     for socket in scan_result {
-        ports_per_ip
-            .entry(socket.ip())
-            .or_insert_with(Vec::new)
-            .push(socket.port());
+        match socket {
+            PortStatus::Open(socket) => {
+                open_ports_per_ip
+                    .entry(socket.ip())
+                    .or_insert_with(Vec::new)
+                    .push(socket.port());
+            }
+            PortStatus::Closed(socket) => {
+                closed_ports_per_ip
+                    .entry(socket.ip())
+                    .or_insert_with(Vec::new)
+                    .push(socket.port());
+            }
+        }
     }
 
     for ip in ips {
-        if ports_per_ip.contains_key(&ip) {
+        if open_ports_per_ip.contains_key(&ip) || closed_ports_per_ip.contains_key(&ip) {
             continue;
         }
 
@@ -128,7 +141,29 @@ fn main() {
     }
 
     let mut script_bench = NamedTimer::start("Scripts");
-    for (ip, ports) in &ports_per_ip {
+
+    print_summary(&open_ports_per_ip, &scripts_to_run, &opts);
+    // We only print closed ports if the user requested it.
+    if opts.closed {
+        println!("closed ports:");
+        print_summary(&closed_ports_per_ip, &scripts_to_run, &opts);
+    }
+
+    // To use the runtime benchmark, run the process as: RUST_LOG=info ./rustscan
+    script_bench.end();
+    benchmarks.push(script_bench);
+    rustscan_bench.end();
+    benchmarks.push(rustscan_bench);
+    debug!("Benchmarks raw {benchmarks:?}");
+    info!("{}", benchmarks.summary());
+}
+
+fn print_summary(
+    ports_per_ip: &HashMap<IpAddr, Vec<u16>>,
+    scripts_to_run: &[ScriptFile],
+    opts: &Opts,
+) {
+    for (ip, ports) in ports_per_ip {
         let vec_str_ports: Vec<String> = ports.iter().map(ToString::to_string).collect();
 
         // nmap port style is 80,443. Comma separated with no spaces.
@@ -142,7 +177,7 @@ fn main() {
         detail!("Starting Script(s)", opts.greppable, opts.accessible);
 
         // Run all the scripts we found and parsed based on the script config file tags field.
-        for mut script_f in scripts_to_run.clone() {
+        for mut script_f in scripts_to_run.iter().cloned() {
             // This part allows us to add commandline arguments to the Script call_format, appending them to the end of the command.
             if !opts.command.is_empty() {
                 let user_extra_args = &opts.command.join(" ");
@@ -181,14 +216,6 @@ fn main() {
             }
         }
     }
-
-    // To use the runtime benchmark, run the process as: RUST_LOG=info ./rustscan
-    script_bench.end();
-    benchmarks.push(script_bench);
-    rustscan_bench.end();
-    benchmarks.push(rustscan_bench);
-    debug!("Benchmarks raw {benchmarks:?}");
-    info!("{}", benchmarks.summary());
 }
 
 /// Prints the opening title of RustScan
