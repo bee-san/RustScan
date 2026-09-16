@@ -94,7 +94,7 @@ impl Scanner {
         debug!("Start scanning sockets. \nBatch size {}\nNumber of ip-s {}\nNumber of ports {}\nTargets all together {} ",
             self.batch_size,
             self.ips.len(),
-            &ports.len(),
+            ports.len(),
             (self.ips.len() * ports.len()));
 
         while let Some(result) = ftrs.next().await {
@@ -113,7 +113,7 @@ impl Scanner {
             }
         }
         debug!("Typical socket connection errors {errors:?}");
-        debug!("Open Sockets found: {:?}", &open_sockets);
+        debug!("Open Sockets found: {:?}", open_sockets);
         open_sockets
     }
 
@@ -144,12 +144,9 @@ impl Scanner {
         for nr_try in 1..=tries {
             match self.connect(socket).await {
                 Ok(tcp_stream) => {
-                    debug!(
-                        "Connection was successful, shutting down stream {}",
-                        &socket
-                    );
+                    debug!("Connection was successful, shutting down stream {}", socket);
                     if let Err(e) = tcp_stream.shutdown(Shutdown::Both) {
-                        debug!("Shutdown stream error {}", &e);
+                        debug!("Shutdown stream error {}", e);
                     }
                     self.fmt_ports(socket);
 

@@ -135,7 +135,7 @@ pub fn init_scripts(scripts: &ScriptsRequired) -> Result<Vec<ScriptFile>> {
                         } else {
                             debug!(
                                 "\nScript tags does not match config tags {:?} {}",
-                                &script_hashset,
+                                script_hashset,
                                 script.path.unwrap().display()
                             );
                         }
@@ -152,7 +152,7 @@ pub fn init_scripts(scripts: &ScriptsRequired) -> Result<Vec<ScriptFile>> {
 pub fn parse_scripts(scripts: Vec<PathBuf>) -> Vec<ScriptFile> {
     let mut parsed_scripts: Vec<ScriptFile> = Vec::with_capacity(scripts.len());
     for script in scripts {
-        debug!("Parsing script {}", &script.display());
+        debug!("Parsing script {}", script.display());
         if let Some(script_file) = ScriptFile::new(script) {
             parsed_scripts.push(script_file);
         }
@@ -224,7 +224,7 @@ impl Script {
     // Some variables get changed before read, and compiler throws warning on warn(unused_assignments)
     #[allow(unused_assignments)]
     pub fn run(self) -> Result<String> {
-        debug!("run self {:?}", &self);
+        debug!("run self {:?}", self);
 
         let separator = self.ports_separator.unwrap_or_else(|| ",".into());
 
@@ -322,7 +322,7 @@ fn execute_script(script: &str) -> Result<String> {
 
 pub fn find_scripts(path: PathBuf) -> Result<Vec<PathBuf>> {
     if path.is_dir() {
-        debug!("Scripts folder found {}", &path.display());
+        debug!("Scripts folder found {}", path.display());
         let mut files_vec: Vec<PathBuf> = Vec::new();
         for entry in fs::read_dir(path)? {
             let entry = entry?;
@@ -360,14 +360,14 @@ impl ScriptFile {
                 }
             }
         } else {
-            debug!("Failed to read file: {}", &real_path.display());
+            debug!("Failed to read file: {}", real_path.display());
             return None;
         }
-        debug!("ScriptFile {} lines\n{}", &real_path.display(), &lines_buf);
+        debug!("ScriptFile {} lines\n{}", real_path.display(), lines_buf);
 
         match toml::from_str::<ScriptFile>(&lines_buf) {
             Ok(mut parsed) => {
-                debug!("Parsed ScriptFile{} \n{:?}", &real_path.display(), &parsed);
+                debug!("Parsed ScriptFile{} \n{:?}", real_path.display(), parsed);
                 parsed.path = Some(real_path);
                 // parsed_scripts.push(parsed);
                 Some(parsed)
