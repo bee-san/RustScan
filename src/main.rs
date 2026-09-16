@@ -60,7 +60,7 @@ fn main() {
         }
     };
 
-    debug!("Scripts initialized {:?}", &scripts_to_run);
+    debug!("Scripts initialized {scripts_to_run:?}");
 
     if !opts.greppable && !opts.accessible && !opts.no_banner {
         print_opening(&opts);
@@ -136,7 +136,7 @@ fn main() {
 
         // if option scripts is none, no script will be spawned
         if opts.greppable || opts.scripts == ScriptsRequired::None {
-            println!("{} -> [{}]", &ip, ports_str);
+            println!("{ip} -> [{ports_str}]");
             continue;
         }
         detail!("Starting Script(s)", opts.greppable, opts.accessible);
@@ -322,7 +322,7 @@ mod tests {
         };
         let batch_size = infer_batch_size(&opts, 9_000);
 
-        assert!(batch_size == 3_000);
+        assert_eq!(batch_size, 3_000);
     }
     #[test]
     #[cfg(unix)]
@@ -335,7 +335,7 @@ mod tests {
         };
         let batch_size = infer_batch_size(&opts, 5_000);
 
-        assert!(batch_size == 4_900);
+        assert_eq!(batch_size, 4_900);
     }
     #[test]
     #[cfg(unix)]
@@ -348,7 +348,7 @@ mod tests {
         };
         let batch_size = adjust_ulimit_size(&opts);
 
-        assert!(batch_size == 2_000);
+        assert_eq!(batch_size, 2_000);
     }
 
     #[test]
@@ -362,7 +362,7 @@ mod tests {
 
         let batch_size = infer_batch_size(&opts, 1_000_000);
 
-        assert!(batch_size == opts.batch_size);
+        assert_eq!(batch_size, opts.batch_size);
     }
 
     #[test]
