@@ -3,9 +3,14 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use rustscan::input::{Opts, PortRange, ScanOrder};
 use rustscan::port_strategy::PortStrategy;
 use rustscan::scanner::Scanner;
+use std::collections::BTreeMap;
 use std::hint::black_box;
 use std::net::IpAddr;
 use std::time::Duration;
+
+// New imports for UDP payload lookup benchmark
+use rustscan::generated::get_parsed_data;
+use rustscan::scanner::build_udp_payload_lookup;
 
 fn portscan_tcp(scanner: &Scanner) {
     let _scan_result = block_on(scanner.run());
@@ -43,6 +48,18 @@ fn bench_address_parsing() {
         ..Default::default()
     };
     let _ips = rustscan::address::parse_addresses(&opts);
+}
+
+// Replicates the old UDP payload selection behavior:
+// scan the whole UDP payload map and find the last payload whose port list contains `port`.
+fn old_payload_for_port(udp_map: &'static BTreeMap<Vec<u16>, Vec<u8>>, port: u16) -> &'static [u8] {
+    let mut payload: &'static [u8] = b"";
+    for (ports, value) in udp_map.iter() {
+        if ports.contains(&port) {
+            payload = value.as_slice();
+        }
+    }
+    payload
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
@@ -91,7 +108,6 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     // Benching helper functions
     c.bench_function("parse address", |b| b.iter(bench_address));
-
     c.bench_function("port strategy", |b| b.iter(bench_port_strategy));
 
     let mut address_group = c.benchmark_group("address parsing");
@@ -100,6 +116,34 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.iter(bench_address_parsing)
     });
     address_group.finish();
+
+    // New: UDP payload lookup micro-benchmark (isolates the improvement)
+    //
+    // This gives you a clean "old vs new" measurement without network noise.
+    let udp_map = get_parsed_data();
+    let lookup = build_udp_payload_lookup(udp_map);
+
+    // Simulate repeated lookups (like scanning a bunch of ports).
+    // 4096 is big enough to make differences obvious, without taking forever.
+    let ports: Vec<u16> = (1..=4096).collect();
+
+    c.bench_function("udp payload lookup/old scan map 1..4096", |b| {
+        b.iter(|| {
+            for &p in ports.iter() {
+                let payload = old_payload_for_port(black_box(udp_map), black_box(p));
+                black_box(payload);
+            }
+        })
+    });
+
+    c.bench_function("udp payload lookup/new hashmap 1..4096", |b| {
+        b.iter(|| {
+            for &p in ports.iter() {
+                let payload = lookup.get(&p).copied().unwrap_or(b"");
+                black_box(payload);
+            }
+        })
+    });
 }
 
 criterion_group!(benches, criterion_benchmark);
