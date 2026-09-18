@@ -124,7 +124,8 @@ pub struct Opts {
     #[arg(long, default_value = "1")]
     pub tries: u8,
 
-    /// Automatically ups the ULIMIT with the value you provided.
+    /// Automatically increases the Unix file-descriptor limit.
+    #[cfg_attr(not(unix), arg(hide = true))]
     #[arg(short, long)]
     pub ulimit: Option<usize>,
 
@@ -176,6 +177,27 @@ impl Opts {
         }
 
         opts
+    }
+
+    /// Validates options whose availability or semantics depend on the
+    /// operating system.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an option is unsupported on the current platform.
+    pub fn validate_platform(&self) -> Result<(), String> {
+        #[cfg(not(unix))]
+        {
+            if self.ulimit.is_some() {
+                return Err(
+                    "--ulimit is only supported on Unix-like operating systems. \
+                     On Windows, use --batch-size (-b) to control scan concurrency."
+                        .to_owned(),
+                );
+            }
+        }
+
+        Ok(())
     }
 
     /// Reads the command line arguments into an Opts struct and merge
@@ -393,6 +415,82 @@ mod tests {
 
         assert_eq!(vec!["127.0.0.1".to_owned()], opts.addresses);
         assert_eq!(command, opts.command);
+    }
+
+    #[test]
+    fn parses_explicit_batch_size() {
+        let opts = Opts::parse_from(["rustscan", "-a", "127.0.0.1", "-b", "1234"]);
+
+        assert_eq!(opts.batch_size, 1234);
+    }
+
+    #[test]
+    fn parses_explicit_long_batch_size() {
+        let opts = Opts::parse_from(["rustscan", "-a", "127.0.0.1", "--batch-size", "4321"]);
+
+        assert_eq!(opts.batch_size, 4321);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_platform_validation_accepts_batch_size() {
+        let opts = Opts::parse_from(["rustscan", "-a", "127.0.0.1", "--batch-size", "500"]);
+
+        assert!(opts.validate_platform().is_ok());
+        assert_eq!(opts.batch_size, 500);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_rejects_ulimit() {
+        let opts = Opts::parse_from(["rustscan", "-a", "127.0.0.1", "--ulimit", "5000"]);
+
+        let error = opts
+            .validate_platform()
+            .expect_err("Windows must reject --ulimit");
+
+        assert!(error.contains("--ulimit"));
+        assert!(error.contains("Unix"));
+        assert!(error.contains("--batch-size"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_hides_ulimit_from_help() {
+        let help = Opts::command().render_long_help().to_string();
+
+        assert!(
+            !help.contains("--ulimit"),
+            "--ulimit should not be advertised on Windows"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_rejects_ulimit_from_config_merge() {
+        let mut opts = Opts {
+            no_config: false,
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.ulimit = Some(5_000);
+
+        opts.merge(&config);
+
+        let error = opts
+            .validate_platform()
+            .expect_err("Windows must reject --ulimit supplied by configuration");
+
+        assert!(error.contains("--ulimit"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn unix_platform_validation_accepts_ulimit() {
+        let opts = Opts::parse_from(["rustscan", "-a", "127.0.0.1", "--ulimit", "5000"]);
+
+        assert!(opts.validate_platform().is_ok());
+        assert_eq!(opts.ulimit, Some(5_000));
     }
 
     #[test]
