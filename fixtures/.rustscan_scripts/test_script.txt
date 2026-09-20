@@ -4,6 +4,6 @@
 #ports_separator = ","
 #call_format = "nmap -vvv -p {{port}} {{ip}}"
 
-# Scriptfile parser stops at the first blank line with parsing.
+# The Scriptfile parser stops parsing at the first blank line.
 # This script will run the system installed nmap, ports will be concatenated with "," .
 # Unused field: trigger_port = "80"
