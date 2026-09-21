@@ -4,7 +4,7 @@
 #trigger_port = "80"
 #call_format = "python3 {{script}} {{ip}} {{port}}"
 
-# Sriptfile parser stops at the first blank line with parsing.
+# The Scriptfile parser stops parsing at the first blank line.
 # This script will run itself as an argument with the system installed python interpreter, only scanning port 80.
 # Unused filed: ports_separator = ","
 
