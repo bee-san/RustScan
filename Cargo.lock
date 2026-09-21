@@ -1794,6 +1794,7 @@ dependencies = [
  "rlimit",
  "serde",
  "serde_derive",
+ "serde_json",
  "text_placeholder",
  "toml",
  "wait-timeout",

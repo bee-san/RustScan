@@ -44,6 +44,7 @@ once_cell = "1.21.4"
 parameterized = "2.0.0"
 wait-timeout = "0.2"
 criterion = { version = "0.8", features = ["html_reports"] }
+serde_json = "1.0"
 
 [package.metadata.deb]
 depends = "$auto, nmap"
