@@ -171,43 +171,111 @@ fn payloads_v(fp_map: &BTreeMap<i32, String>) -> BTreeMap<i32, Vec<u8>> {
     let mut payb_linenr: BTreeMap<i32, Vec<u8>> = BTreeMap::new();
 
     for (&line_nr, data) in fp_map {
-        if data.contains('\"') {
-            let start = data.find('\"').expect("payload opening \" not found");
-            let payloads = &data[start + 1..];
-            payb_linenr.insert(line_nr, parser(payloads.trim()));
+        if data.contains('"') {
+            let start = data.find('"').expect("payload opening \" not found");
+            // Pass from the opening quote: the decoder pairs quotes itself
+            // to split multi-line segments.
+            payb_linenr.insert(line_nr, parser(data[start..].trim()));
         }
     }
 
     payb_linenr
 }
 
-/// Converts a hexadecimal string to a Vec<u8>
+/// Converts a quoted Nmap payload block to bytes.
 ///
 /// # Arguments
 ///
-/// * `payload` - A string slice containing the hexadecimal payload
+/// * `payload` - The raw block text starting at its first opening quote:
+///   one or more `"..."` segments separated by whitespace
 ///
 /// # Returns
 ///
-/// A vector of bytes representing the decoded payload
+/// The decoded probe bytes: segments are decoded with [`decode_segment`]
+/// and concatenated with no separators, so multi-line probes reassemble
+/// exactly.
 fn parser(payload: &str) -> Vec<u8> {
-    let payload = payload.trim_matches('"');
-    let mut tmp_str = String::new();
     let mut bytes: Vec<u8> = Vec::new();
-
-    for (idx, char) in payload.chars().enumerate() {
-        if char == '\\' && payload.chars().nth(idx + 1) == Some('x') {
-            continue;
-        } else if char.is_ascii_hexdigit() {
-            tmp_str.push(char);
-            if tmp_str.len() == 2 {
-                bytes.push(u8::from_str_radix(&tmp_str, 16).unwrap());
-                tmp_str.clear();
+    let mut rest = payload.trim();
+    while let Some(open) = rest.find('"') {
+        let after_open = &rest[open + 1..];
+        match split_segment(after_open) {
+            Some((segment, remainder)) => {
+                decode_segment(segment, &mut bytes);
+                rest = remainder;
+            }
+            None => {
+                // Unterminated trailing quote: decode what's left literally.
+                decode_segment(after_open, &mut bytes);
+                break;
             }
         }
     }
 
     bytes
+}
+
+/// Splits off the first `"..."` segment: `text` must start just after an
+/// opening quote. Escaped quotes (`\"`) do not terminate the segment.
+///
+/// Returns the segment body and the remainder after the closing quote.
+fn split_segment(text: &str) -> Option<(&str, &str)> {
+    let mut escaped = false;
+    for (i, c) in text.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if c == '"' {
+            return Some((&text[..i], &text[i + 1..]));
+        }
+    }
+    None
+}
+
+/// Decodes one quoted Nmap payload segment in C-style escape format:
+/// `\xNN` becomes a byte, common single-char escapes (`\\`, `\"`,
+/// `\0`, `\n`, `\r`, `\t`) decode to their value, and every other
+/// character contributes its literal bytes.
+///
+/// Preserving literal text matters: several probes embed plain-text
+/// protocol words (the SNMP `public` community string, NetBIOS names,
+/// LDAP `objectClass`, SSDP headers). The previous hexdigits-only
+/// decoding mangled them into wrong bytes, so agents never answered.
+fn decode_segment(segment: &str, bytes: &mut Vec<u8>) {
+    let mut chars = segment.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            let mut buf = [0; 4];
+            bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            continue;
+        }
+        match chars.next() {
+            Some('x') => {
+                let hi = chars.next().unwrap_or('0');
+                let lo = chars.next().unwrap_or('0');
+                let hex: String = [hi, lo].iter().collect();
+                bytes.push(u8::from_str_radix(&hex, 16).unwrap_or(0));
+            }
+            Some('0') => bytes.push(0),
+            Some('n') => bytes.push(b'\n'),
+            Some('r') => bytes.push(b'\r'),
+            Some('t') => bytes.push(b'\t'),
+            Some('\\') => bytes.push(b'\\'),
+            Some('"') => bytes.push(b'"'),
+            // Unknown escape: keep the character literally, matching Nmap,
+            // which passes unrecognized escapes through untouched.
+            Some(other) => {
+                let mut buf = [0; 4];
+                bytes.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
+            }
+            None => bytes.push(b'\\'),
+        }
+    }
 }
 
 /// Combines the ports BTreeMap and the Payloads BTreeMap
