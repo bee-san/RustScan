@@ -539,4 +539,20 @@ mod tests {
         ];
         assert_eq!(*payload, expected);
     }
+
+    /// The SSDP probe mixes `\xNN` escapes, `\"` escapes and literal text
+    /// across two quoted segments: segments must decode and concatenate
+    /// with no separators.
+    #[test]
+    fn udp_ssdp_probe_decodes_escapes_and_literal_text() {
+        let payload = get_parsed_data()
+            .iter()
+            .find(|(ports, _)| ports.contains(&1900))
+            .map(|(_, payload)| payload)
+            .expect("no UDP payload registered for port 1900");
+        let expected =
+            b"M-SEARCH * HTTP/1.1\r\nHost: 239.255.255.250:1900\r\nMan: \"ssdp:discover\"\r\nMX: 5\r\nST: ssdp:all\r\n\r\n"
+                .to_vec();
+        assert_eq!(*payload, expected);
+    }
 }
