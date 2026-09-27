@@ -25,6 +25,10 @@ pub fn main() {
     let mut curr = String::new();
 
     for line in data.trim().split('\n') {
+        // Strip a trailing carriage return so CRLF checkouts parse
+        // identically to LF ones (otherwise `\r` pollutes port tokens and
+        // blank lines stop looking blank).
+        let line = line.strip_suffix('\r').unwrap_or(line);
         if line.contains('#') || line.is_empty() {
             continue;
         }
