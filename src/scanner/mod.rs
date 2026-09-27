@@ -520,4 +520,23 @@ mod tests {
         block_on(scanner.run());
         assert_eq!(1, 1);
     }
+
+    /// Regression test for https://github.com/bee-san/RustScan/issues/933:
+    /// the SNMP public-walk probe must be the exact 33-byte BER packet, with
+    /// the literal `public` community string intact. The old hexdigits-only
+    /// decoding mangled it into a 28-byte probe that agents never answered.
+    #[test]
+    fn udp_snmp_probe_bytes_match_nmap() {
+        let payload = get_parsed_data()
+            .iter()
+            .find(|(ports, _)| ports.contains(&161))
+            .map(|(_, payload)| payload)
+            .expect("no UDP payload registered for port 161");
+        let expected: Vec<u8> = vec![
+            0x30, 0x1f, 0x02, 0x01, 0x00, 0x04, 0x06, b'p', b'u', b'b', b'l', b'i', b'c', 0xa1,
+            0x12, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x30, 0x07, 0x30, 0x05,
+            0x06, 0x01, 0x00, 0x05, 0x00,
+        ];
+        assert_eq!(*payload, expected);
+    }
 }
