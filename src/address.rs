@@ -191,15 +191,54 @@ fn get_resolver(resolver: &Option<String>) -> Resolver {
                     Protocol::Udp,
                 ));
             }
-            Resolver::new(config, ResolverOpts::default()).unwrap()
+            Resolver::new(config, resolver_opts()).unwrap()
         }
-        None => match Resolver::from_system_conf() {
+        None => match system_resolver() {
             Ok(resolver) => resolver,
-            Err(_) => {
-                Resolver::new(ResolverConfig::cloudflare_tls(), ResolverOpts::default()).unwrap()
-            }
+            Err(_) => Resolver::new(ResolverConfig::cloudflare_tls(), resolver_opts()).unwrap(),
         },
     }
+}
+
+/// `true` on Windows when the `SystemRoot` environment variable is unset.
+///
+/// hickory-resolver locates the hosts file via
+/// `std::env::var_os("SystemRoot").expect(...)`, which panics when the
+/// variable is missing. Processes spawned with a minimal environment
+/// (services, scheduled tasks, WMI) can lack `SystemRoot`, and the panic is
+/// fatal under this crate's `panic = "abort"` release profile.
+fn windows_system_root_missing() -> bool {
+    cfg!(windows) && std::env::var_os("SystemRoot").is_none()
+}
+
+/// Derives a resolver from the system configuration, e.g. `/etc/resolv.conf`
+/// on *nix or the registry on Windows.
+///
+/// Returns an error without touching the system configuration when doing so
+/// would panic inside hickory-resolver (see [`windows_system_root_missing`]).
+fn system_resolver() -> std::io::Result<Resolver> {
+    if windows_system_root_missing() {
+        debug!("SystemRoot is not set; skipping system resolver configuration");
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "SystemRoot environment variable is not set",
+        ));
+    }
+
+    Resolver::from_system_conf()
+}
+
+/// Resolver options that are safe to use in the current environment.
+///
+/// hickory-resolver eagerly loads the hosts file when `use_hosts_file` is set
+/// (the default), which hits the same missing-`SystemRoot` panic described in
+/// [`windows_system_root_missing`]; disable it in that case.
+fn resolver_opts() -> ResolverOpts {
+    let mut opts = ResolverOpts::default();
+    if windows_system_root_missing() {
+        opts.use_hosts_file = false;
+    }
+    opts
 }
 
 /// Parses and input file of IPs for use in DNS resolution.
