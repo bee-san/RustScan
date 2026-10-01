@@ -214,8 +214,9 @@ cargo bench --locked --bench benchmark_helpers -- 'runtime scheduling'
 ```
 
 For the baseline, apply [the benchmark adapter](tokio-benchmark-baseline.patch)
-to a checkout of `cfb864590161d1c8a003811dcf4846ceb8c8284f`, then run the same
-command. The JSON includes per-sample times and benchmark binary hashes.
+with `git apply --unidiff-zero` to a checkout of
+`cfb864590161d1c8a003811dcf4846ceb8c8284f`, then run the same benchmark command.
+The JSON includes per-sample times and benchmark binary hashes.
 
 ## Scope
 

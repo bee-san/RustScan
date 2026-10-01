@@ -1,24 +1,10 @@
-diff --git a/benches/benchmark_helpers.rs b/benches/benchmark_helpers.rs
-index c852ae8..836288e 100644
 --- a/benches/benchmark_helpers.rs
 +++ b/benches/benchmark_helpers.rs
-@@ -1,10 +1,12 @@
- use criterion::{criterion_group, criterion_main, Criterion};
+@@ -1,0 +2 @@
 +use futures::{stream::FuturesUnordered, StreamExt};
- use rustscan::generated::get_parsed_data;
- use rustscan::input::{Opts, PortRanges, ScanOrder};
- use rustscan::port_strategy::PortStrategy;
- use rustscan::scanner::build_udp_payload_lookup;
- use std::collections::BTreeMap;
- use std::hint::black_box;
+@@ -7,0 +9 @@
 +use std::io;
- use std::net::IpAddr;
- use std::time::Duration;
- 
-@@ -47,7 +49,48 @@ fn old_payload_for_port(udp_map: &'static BTreeMap<Vec<u16>, Vec<u8>>, port: u16
-     payload
- }
- 
+@@ -49,0 +52,29 @@
 +// Exercise the scanner's bounded scheduling pattern without opening sockets.
 +// Ready operations model immediate replies; pending operations expire instead.
 +async fn simulated_operation(expires: bool) -> io::Result<()> {
@@ -48,7 +34,7 @@ index c852ae8..836288e 100644
 +    }
 +}
 +
- fn criterion_benchmark(c: &mut Criterion) {
+@@ -50,0 +82,12 @@
 +    let mut runtime_group = c.benchmark_group("runtime scheduling");
 +    runtime_group.sample_size(20);
 +    runtime_group.warm_up_time(Duration::from_secs(1));
@@ -61,6 +47,3 @@ index c852ae8..836288e 100644
 +    });
 +    runtime_group.finish();
 +
-     // Benching helper functions
-     c.bench_function("parse address", |b| b.iter(bench_address));
- 
