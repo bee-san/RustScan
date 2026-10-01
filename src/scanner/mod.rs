@@ -20,6 +20,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use tokio::io::Interest;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::{sleep, timeout};
 
@@ -487,7 +488,7 @@ impl Scanner {
                 if !sent {
                     udp_socket.send(payload).await?;
                 }
-                match timeout(wait, udp_socket.recv(&mut buf)).await {
+                match timeout(wait, recv_or_error(&udp_socket, &mut buf)).await {
                     Ok(received) => received,
                     // Nothing came back in time.
                     Err(_elapsed) => return Ok(false),
@@ -537,6 +538,44 @@ impl Scanner {
 /// back from the reactor and shut it down synchronously instead.
 fn shutdown_both(stream: TcpStream) -> io::Result<()> {
     stream.into_std()?.shutdown(Shutdown::Both)
+}
+
+/// Waits for a datagram on a connected UDP socket, or for the error the
+/// system queued for it: an ICMP "port unreachable" is reported as a refused
+/// connection, which is how closed UDP ports are told apart from filtered
+/// ones.
+///
+/// `UdpSocket::recv` alone does not do this on Linux: a queued ICMP error
+/// only raises `EPOLLERR`, which Tokio does not count as readable, so `recv`
+/// would sleep until the timeout. async-io treated `EPOLLERR` as readable.
+async fn recv_or_error(socket: &UdpSocket, buf: &mut [u8]) -> io::Result<usize> {
+    loop {
+        let ready = socket.ready(Interest::READABLE | Interest::ERROR).await?;
+
+        if ready.is_readable() {
+            match socket.try_recv(buf) {
+                // A spurious wake-up; wait again (unless the socket is closed
+                // for reading, which would wake us up forever).
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock && !ready.is_read_closed() => {}
+                received => return received,
+            }
+        }
+
+        if ready.is_error() {
+            // Take (and clear) the queued error. `WouldBlock` when there is
+            // none makes Tokio clear the error readiness, so this cannot spin.
+            let queued = socket.try_io(Interest::ERROR, || {
+                socket
+                    .take_error()?
+                    .map_or_else(|| Err(io::ErrorKind::WouldBlock.into()), Ok)
+            });
+            match queued {
+                Ok(error) => return Err(error),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
 }
 
 /// The error reported for a connection attempt that hit the timeout; the same
