@@ -1,10 +1,15 @@
 name: Test
+
 on:
   pull_request:
     branches: [master]
   push:
     branches:
       - master
+
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Test Suite
@@ -13,12 +18,20 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         rust: [stable]
     runs-on: ${{ matrix.os }}
+
     steps:
       - name: Checkout sources
         uses: actions/checkout@v7
 
-      - name: Install stable toolchain
-        run: rustup toolchain install "${{ matrix.rust }}" --profile minimal
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: clippy, rustfmt
+          # Caching is handled by Swatinem/rust-cache below.
+          cache: false
+          # Keep RUSTFLAGS unset; `just test` already denies Clippy warnings.
+          rustflags: ""
 
       - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
@@ -26,5 +39,5 @@ jobs:
       - name: Install Just
         uses: extractions/setup-just@v4
 
-      - name: Run just
+      - name: Run tests
         run: just test
