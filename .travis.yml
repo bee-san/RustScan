@@ -17,7 +17,6 @@ jobs:
 script:
 - cargo build
 - cargo test
-- "ulimit -n 5000; cargo test timelimits:: -- --ignored --test-threads=1 --show-output"
 - cargo fmt -- --check
 after_failure:
 - wget https://raw.githubusercontent.com/DiscordHooks/travis-ci-discord-webhook/master/send.sh

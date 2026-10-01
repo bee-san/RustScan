@@ -67,3 +67,8 @@ root@container:/rustscan# cargo fmt
 root@container:/rustscan# cargo clippy
 root@container:/rustscan# cargo test
 ```
+
+Automated tests and benchmarks must run without network traffic or external script
+execution. Keep coverage focused on parsing, configuration, port ordering, socket
+address iteration, and timing helpers. Do not add tests that run TCP/UDP scans
+(including localhost), resolve hostnames, or launch Nmap or other scripts.
