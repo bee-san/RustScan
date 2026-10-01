@@ -30,6 +30,14 @@ use crate::warning;
 /// ```
 ///
 /// Finally, any duplicates are removed to avoid excessive scans.
+///
+/// # Blocking
+///
+/// This function blocks: it reads files and resolves host names, and
+/// hickory's synchronous [`Resolver`] runs a Tokio runtime of its own, which
+/// Tokio refuses to drop inside an asynchronous context. Call it before you
+/// start your runtime (as the `rustscan` binary does) or from
+/// `tokio::task::spawn_blocking`, not directly from async code.
 pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
     let mut ips: Vec<IpAddr> = Vec::new();
     let mut unresolved_addresses: Vec<&str> = Vec::new();
