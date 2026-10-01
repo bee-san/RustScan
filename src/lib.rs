@@ -5,12 +5,17 @@
 //!
 //! The core scanning behaviour is managed by
 //! [`Scanner`](crate::scanner::Scanner) which in turn requires a
-//! [`PortStrategy`](crate::port_strategy::PortStrategy):
+//! [`PortStrategy`](crate::port_strategy::PortStrategy).
+//!
+//! The scanner is asynchronous and runs on [Tokio](https://docs.rs/tokio):
+//! await [`Scanner::run`](crate::scanner::Scanner::run) from a Tokio runtime
+//! with the I/O and time drivers enabled. It never spawns tasks, so a
+//! current-thread runtime is enough (see [`Scanner`](crate::scanner::Scanner)
+//! for details).
 //!
 //! This example is compiled but never executed by the test suite.
 //!
 //! ```no_run
-//! use async_std::task::block_on;
 //! use std::{net::IpAddr, time::Duration};
 //!
 //! use rustscan::input::{PortRanges, ScanOrder};
@@ -33,7 +38,13 @@
 //!         false, // is this a UDP scan?
 //!     );
 //!
-//!     let scan_result = block_on(scanner.run());
+//!     // Inside an async context (e.g. `#[tokio::main]`) this is simply
+//!     // `scanner.run().await`.
+//!     let runtime = tokio::runtime::Builder::new_current_thread()
+//!         .enable_all()
+//!         .build()
+//!         .unwrap();
+//!     let scan_result = runtime.block_on(scanner.run());
 //!
 //!     println!("{:?}", scan_result);
 //! }
