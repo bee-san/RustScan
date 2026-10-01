@@ -191,15 +191,54 @@ fn get_resolver(resolver: &Option<String>) -> Resolver {
                     Protocol::Udp,
                 ));
             }
-            Resolver::new(config, ResolverOpts::default()).unwrap()
+            Resolver::new(config, resolver_opts()).unwrap()
         }
-        None => match Resolver::from_system_conf() {
+        None => match system_resolver() {
             Ok(resolver) => resolver,
-            Err(_) => {
-                Resolver::new(ResolverConfig::cloudflare_tls(), ResolverOpts::default()).unwrap()
-            }
+            Err(_) => Resolver::new(ResolverConfig::cloudflare_tls(), resolver_opts()).unwrap(),
         },
     }
+}
+
+/// `true` on Windows when the `SystemRoot` environment variable is unset.
+///
+/// hickory-resolver locates the hosts file via
+/// `std::env::var_os("SystemRoot").expect(...)`, which panics when the
+/// variable is missing. Processes spawned with a minimal environment
+/// (services, scheduled tasks, WMI) can lack `SystemRoot`, and the panic is
+/// fatal under this crate's `panic = "abort"` release profile.
+fn windows_system_root_missing() -> bool {
+    cfg!(windows) && std::env::var_os("SystemRoot").is_none()
+}
+
+/// Derives a resolver from the system configuration, e.g. `/etc/resolv.conf`
+/// on *nix or the registry on Windows.
+///
+/// Returns an error without touching the system configuration when doing so
+/// would panic inside hickory-resolver (see [`windows_system_root_missing`]).
+fn system_resolver() -> std::io::Result<Resolver> {
+    if windows_system_root_missing() {
+        debug!("SystemRoot is not set; skipping system resolver configuration");
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "SystemRoot environment variable is not set",
+        ));
+    }
+
+    Resolver::from_system_conf()
+}
+
+/// Resolver options that are safe to use in the current environment.
+///
+/// hickory-resolver eagerly loads the hosts file when `use_hosts_file` is set
+/// (the default), which hits the same missing-`SystemRoot` panic described in
+/// [`windows_system_root_missing`]; disable it in that case.
+fn resolver_opts() -> ResolverOpts {
+    let mut opts = ResolverOpts::default();
+    if windows_system_root_missing() {
+        opts.use_hosts_file = false;
+    }
+    opts
 }
 
 /// Parses and input file of IPs for use in DNS resolution.
@@ -236,7 +275,7 @@ fn read_ips_from_file(
 
 #[cfg(test)]
 mod tests {
-    use super::{get_resolver, parse_addresses, Opts};
+    use super::{parse_addresses, Opts};
     use std::net::Ipv4Addr;
 
     #[test]
@@ -319,81 +358,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_correct_host_addresses() {
-        let opts = Opts {
-            addresses: vec!["google.com".to_owned()],
-            ..Default::default()
-        };
-
-        let ips = parse_addresses(&opts);
-
-        assert_eq!(ips.len(), 1);
-    }
-
-    #[test]
-    fn parse_correct_and_incorrect_addresses() {
-        let opts = Opts {
-            addresses: vec!["127.0.0.1".to_owned(), "im_wrong".to_owned()],
-            ..Default::default()
-        };
-
-        let ips = parse_addresses(&opts);
-
-        assert_eq!(ips, [Ipv4Addr::new(127, 0, 0, 1),]);
-    }
-
-    #[test]
-    fn parse_incorrect_addresses() {
-        let opts = Opts {
-            addresses: vec!["im_wrong".to_owned(), "300.10.1.1".to_owned()],
-            ..Default::default()
-        };
-
-        let ips = parse_addresses(&opts);
-
-        assert!(ips.is_empty());
-    }
-
-    #[test]
-    fn parse_hosts_file_and_incorrect_hosts() {
-        // Host file contains IP, Hosts, incorrect IPs, incorrect hosts
-        let opts = Opts {
-            addresses: vec!["fixtures/hosts.txt".to_owned()],
-            ..Default::default()
-        };
-
-        let ips = parse_addresses(&opts);
-
-        assert_eq!(ips.len(), 3);
-    }
-
-    #[test]
-    fn parse_empty_hosts_file() {
-        // Host file contains IP, Hosts, incorrect IPs, incorrect hosts
-        let opts = Opts {
-            addresses: vec!["fixtures/empty_hosts.txt".to_owned()],
-            ..Default::default()
-        };
-
-        let ips = parse_addresses(&opts);
-
-        assert_eq!(ips.len(), 0);
-    }
-
-    #[test]
-    fn parse_naughty_host_file() {
-        // Host file contains IP, Hosts, incorrect IPs, incorrect hosts
-        let opts = Opts {
-            addresses: vec!["fixtures/naughty_string.txt".to_owned()],
-            ..Default::default()
-        };
-
-        let ips = parse_addresses(&opts);
-
-        assert_eq!(ips.len(), 0);
-    }
-
-    #[test]
     fn parse_duplicate_cidrs() {
         let opts = Opts {
             addresses: vec!["79.98.104.0/21".to_owned(), "79.98.104.0/24".to_owned()],
@@ -416,19 +380,5 @@ mod tests {
         let ips = parse_addresses(&opts);
 
         assert_eq!(ips.len(), 256);
-    }
-
-    #[test]
-    fn resolver_args_google_dns() {
-        // https://developers.google.com/speed/public-dns
-        let opts = Opts {
-            resolver: Some("8.8.8.8,8.8.4.4".to_owned()),
-            ..Default::default()
-        };
-
-        let resolver = get_resolver(&opts.resolver);
-        let lookup = resolver.lookup_ip("www.example.com.").unwrap();
-
-        assert!(lookup.iter().next().is_some());
     }
 }

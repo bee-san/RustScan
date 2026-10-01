@@ -1,6 +1,7 @@
 //! Core functionality for actual scanning behaviour.
 use crate::generated::get_parsed_data;
 use crate::port_strategy::PortStrategy;
+use crate::tui::println_safe;
 use log::debug;
 
 mod socket_iterator;
@@ -285,7 +286,7 @@ impl Scanner {
                 }
             }
             Err(e) => {
-                println!("Err E binding sock {e:?}");
+                println_safe(format_args!("Err E binding sock {e:?}"));
                 Err(e)
             }
         }
@@ -295,9 +296,9 @@ impl Scanner {
     fn fmt_ports(&self, socket: SocketAddr) {
         if !self.greppable {
             if self.accessible {
-                println!("Open {socket}");
+                println_safe(format_args!("Open {socket}"));
             } else {
-                println!("Open {}", socket.to_string().purple());
+                println_safe(format_args!("Open {}", socket.to_string().purple()));
             }
         }
     }
@@ -306,220 +307,9 @@ impl Scanner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::{PortRange, ScanOrder};
-    use async_std::task::block_on;
-    use std::{net::IpAddr, time::Duration};
 
-    #[test]
-    fn scanner_runs() {
-        // Makes sure the program still runs and doesn't panic
-        let addrs = vec!["127.0.0.1".parse::<IpAddr>().unwrap()];
-        let range = PortRange {
-            start: 1,
-            end: 1_000,
-        };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
-        let scanner = Scanner::new(
-            &addrs,
-            10,
-            Duration::from_millis(100),
-            1,
-            true,
-            strategy,
-            true,
-            vec![9000],
-            false,
-        );
-        block_on(scanner.run());
-        // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
-        assert_eq!(1, 1);
-    }
-    #[test]
-    fn ipv6_scanner_runs() {
-        // Makes sure the program still runs and doesn't panic
-        let addrs = vec!["::1".parse::<IpAddr>().unwrap()];
-        let range = PortRange {
-            start: 1,
-            end: 1_000,
-        };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
-        let scanner = Scanner::new(
-            &addrs,
-            10,
-            Duration::from_millis(100),
-            1,
-            true,
-            strategy,
-            true,
-            vec![9000],
-            false,
-        );
-        block_on(scanner.run());
-        // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
-        assert_eq!(1, 1);
-    }
-    #[test]
-    fn quad_zero_scanner_runs() {
-        let addrs = vec!["0.0.0.0".parse::<IpAddr>().unwrap()];
-        let range = PortRange {
-            start: 1,
-            end: 1_000,
-        };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
-        let scanner = Scanner::new(
-            &addrs,
-            10,
-            Duration::from_millis(100),
-            1,
-            true,
-            strategy,
-            true,
-            vec![9000],
-            false,
-        );
-        block_on(scanner.run());
-        assert_eq!(1, 1);
-    }
-    #[test]
-    fn google_dns_runs() {
-        let addrs = vec!["8.8.8.8".parse::<IpAddr>().unwrap()];
-        let range = PortRange {
-            start: 400,
-            end: 445,
-        };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
-        let scanner = Scanner::new(
-            &addrs,
-            10,
-            Duration::from_millis(100),
-            1,
-            true,
-            strategy,
-            true,
-            vec![9000],
-            false,
-        );
-        block_on(scanner.run());
-        assert_eq!(1, 1);
-    }
-    #[test]
-    fn infer_ulimit_lowering_no_panic() {
-        // Test behaviour on MacOS where ulimit is not automatically lowered
-        let addrs = vec!["8.8.8.8".parse::<IpAddr>().unwrap()];
-
-        // mac should have this automatically scaled down
-        let range = PortRange {
-            start: 400,
-            end: 600,
-        };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
-        let scanner = Scanner::new(
-            &addrs,
-            10,
-            Duration::from_millis(100),
-            1,
-            true,
-            strategy,
-            true,
-            vec![9000],
-            false,
-        );
-        block_on(scanner.run());
-        assert_eq!(1, 1);
-    }
-
-    #[test]
-    fn udp_scan_runs() {
-        // Makes sure the program still runs and doesn't panic
-        let addrs = vec!["127.0.0.1".parse::<IpAddr>().unwrap()];
-        let range = PortRange {
-            start: 1,
-            end: 1_000,
-        };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
-        let scanner = Scanner::new(
-            &addrs,
-            10,
-            Duration::from_millis(100),
-            1,
-            true,
-            strategy,
-            true,
-            vec![9000],
-            true,
-        );
-        block_on(scanner.run());
-        // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
-        assert_eq!(1, 1);
-    }
-    #[test]
-    fn udp_ipv6_runs() {
-        // Makes sure the program still runs and doesn't panic
-        let addrs = vec!["::1".parse::<IpAddr>().unwrap()];
-        let range = PortRange {
-            start: 1,
-            end: 1_000,
-        };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
-        let scanner = Scanner::new(
-            &addrs,
-            10,
-            Duration::from_millis(100),
-            1,
-            true,
-            strategy,
-            true,
-            vec![9000],
-            true,
-        );
-        block_on(scanner.run());
-        // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
-        assert_eq!(1, 1);
-    }
-    #[test]
-    fn udp_quad_zero_scanner_runs() {
-        let addrs = vec!["0.0.0.0".parse::<IpAddr>().unwrap()];
-        let range = PortRange {
-            start: 1,
-            end: 1_000,
-        };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
-        let scanner = Scanner::new(
-            &addrs,
-            10,
-            Duration::from_millis(100),
-            1,
-            true,
-            strategy,
-            true,
-            vec![9000],
-            true,
-        );
-        block_on(scanner.run());
-        assert_eq!(1, 1);
-    }
-    #[test]
-    fn udp_google_dns_runs() {
-        let addrs = vec!["8.8.8.8".parse::<IpAddr>().unwrap()];
-        let range = PortRange {
-            start: 100,
-            end: 150,
-        };
-        let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
-        let scanner = Scanner::new(
-            &addrs,
-            10,
-            Duration::from_millis(100),
-            1,
-            true,
-            strategy,
-            true,
-            vec![9000],
-            true,
-        );
-        block_on(scanner.run());
-        assert_eq!(1, 1);
-    }
+    // These tests only inspect the payload table generated by build.rs;
+    // they never open sockets.
 
     /// Regression test for https://github.com/bee-san/RustScan/issues/933:
     /// the SNMP public-walk probe must be the exact 33-byte BER packet, with

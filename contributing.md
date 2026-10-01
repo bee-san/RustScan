@@ -54,10 +54,10 @@ You can now modify RustScan files with your favorite editor, once you want to co
 root@container:/rustscan# cargo build
 ```
 
-You are now ready to use RustScan:
+You can check the command-line interface without starting a scan:
 
 ```bash
-root@container:/rustscan# cargo run -- -b 2000 -t 5000 -a 127.0.0.1
+root@container:/rustscan# cargo run -- --help
 ```
 
 You can also format, lint with `clippy` and test the code with the following commands:
@@ -67,3 +67,8 @@ root@container:/rustscan# cargo fmt
 root@container:/rustscan# cargo clippy
 root@container:/rustscan# cargo test
 ```
+
+Automated tests and benchmarks must run without network traffic or external script
+execution. Keep coverage focused on parsing, configuration, port ordering, socket
+address iteration, and timing helpers. Do not add tests that run TCP/UDP scans
+(including localhost), resolve hostnames, or launch Nmap or other scripts.
