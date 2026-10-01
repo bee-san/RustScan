@@ -1,24 +1,12 @@
-use async_std::task::block_on;
 use criterion::{criterion_group, criterion_main, Criterion};
+use rustscan::generated::get_parsed_data;
 use rustscan::input::{Opts, PortRange, ScanOrder};
 use rustscan::port_strategy::PortStrategy;
-use rustscan::scanner::Scanner;
+use rustscan::scanner::build_udp_payload_lookup;
 use std::collections::BTreeMap;
 use std::hint::black_box;
 use std::net::IpAddr;
 use std::time::Duration;
-
-// New imports for UDP payload lookup benchmark
-use rustscan::generated::get_parsed_data;
-use rustscan::scanner::build_udp_payload_lookup;
-
-fn portscan_tcp(scanner: &Scanner) {
-    let _scan_result = block_on(scanner.run());
-}
-
-fn portscan_udp(scanner: &Scanner) {
-    let _scan_result = block_on(scanner.run());
-}
 
 fn bench_address() {
     let _addrs = ["127.0.0.1".parse::<IpAddr>().unwrap()];
@@ -63,51 +51,9 @@ fn old_payload_for_port(udp_map: &'static BTreeMap<Vec<u16>, Vec<u8>>, port: u16
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let addrs = vec!["127.0.0.1".parse::<IpAddr>().unwrap()];
-    let range = PortRange {
-        start: 1,
-        end: 1_000,
-    };
-    let strategy_tcp = PortStrategy::pick(&Some(range.clone()), None, ScanOrder::Serial);
-    let strategy_udp = PortStrategy::pick(&Some(range.clone()), None, ScanOrder::Serial);
-
-    let scanner_tcp = Scanner::new(
-        &addrs,
-        10,
-        Duration::from_millis(10),
-        1,
-        false,
-        strategy_tcp,
-        true,
-        vec![],
-        false,
-    );
-
-    c.bench_function("portscan tcp", |b| {
-        b.iter(|| portscan_tcp(black_box(&scanner_tcp)))
-    });
-
-    let scanner_udp = Scanner::new(
-        &addrs,
-        10,
-        Duration::from_millis(10),
-        1,
-        false,
-        strategy_udp,
-        true,
-        vec![],
-        true,
-    );
-
-    let mut udp_group = c.benchmark_group("portscan udp");
-    udp_group.measurement_time(Duration::from_secs(20));
-    udp_group.bench_function("portscan udp", |b| {
-        b.iter(|| portscan_udp(black_box(&scanner_udp)))
-    });
-    udp_group.finish();
-
     // Benching helper functions
     c.bench_function("parse address", |b| b.iter(bench_address));
+
     c.bench_function("port strategy", |b| b.iter(bench_port_strategy));
 
     let mut address_group = c.benchmark_group("address parsing");
@@ -117,14 +63,10 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
     address_group.finish();
 
-    // New: UDP payload lookup micro-benchmark (isolates the improvement)
-    //
-    // This gives you a clean "old vs new" measurement without network noise.
+    // UDP payload lookup micro-benchmark: compares the old linear scan of the
+    // payload map with the precomputed port -> payload lookup. No sockets.
     let udp_map = get_parsed_data();
     let lookup = build_udp_payload_lookup(udp_map);
-
-    // Simulate repeated lookups (like scanning a bunch of ports).
-    // 4096 is big enough to make differences obvious, without taking forever.
     let ports: Vec<u16> = (1..=4096).collect();
 
     c.bench_function("udp payload lookup/old scan map 1..4096", |b| {
