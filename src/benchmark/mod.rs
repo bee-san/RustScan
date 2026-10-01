@@ -42,9 +42,11 @@ impl Benchmark {
         let mut summary = String::from("\nRustScan Benchmark Summary");
 
         for timer in &self.named_timers {
-            if let (Some(start), Some(end)) = (timer.start, timer.end) {
-                let runtime_secs = end.saturating_duration_since(start).as_secs_f32();
-                summary.push_str(&format!("\n{0: <10} | {1: <10}s", timer.name, runtime_secs));
+            if let Some(start) = timer.start {
+                if let Some(end) = timer.end {
+                    let runtime_secs = end.saturating_duration_since(start).as_secs_f32();
+                    summary.push_str(&format!("\n{0: <10} | {1: <10}s", timer.name, runtime_secs));
+                }
             }
         }
         summary

@@ -1,5 +1,5 @@
 use gcd::Gcd;
-use rand::Rng;
+use rand::RngExt;
 use std::convert::TryInto;
 
 pub struct RangeIterator {
