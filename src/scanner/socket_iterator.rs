@@ -18,9 +18,11 @@ use std::slice;
 ///
 /// # Example
 ///
-/// ```
+/// `SocketIterator` lives in a private module, so this example is not run as
+/// a doctest; `goes_through_every_ip_port_combination` checks the same order.
+///
+/// ```ignore
 /// # use std::net::IpAddr;
-/// # use your_crate::SocketIterator;
 /// let ips = [
 ///     "127.0.0.1".parse::<IpAddr>().unwrap(),
 ///     "192.168.0.1".parse::<IpAddr>().unwrap(),
@@ -114,12 +116,32 @@ mod tests {
         let ports: Vec<u16> = vec![22, 80];
 
         let mut a = SocketIterator::new(&addrs, &ports);
-        a.next(); // consume one
-        let mut b = a.clone(); // b starts where a is now
+        assert_eq!(a.next(), Some(SocketAddr::new(addrs[0], ports[0])));
+        let b = a.clone(); // b starts where a is now
 
-        assert_eq!(a.next(), b.next());
-        assert_eq!(a.next(), b.next());
-        assert_eq!(a.next(), None);
-        assert_eq!(b.next(), None);
+        // 2 IPs x 2 ports = 4 sockets, one of which was consumed before cloning.
+        let rest = [
+            SocketAddr::new(addrs[1], ports[0]),
+            SocketAddr::new(addrs[0], ports[1]),
+            SocketAddr::new(addrs[1], ports[1]),
+        ];
+        assert_eq!(a.collect::<Vec<_>>(), rest);
+        assert_eq!(b.collect::<Vec<_>>(), rest);
+    }
+
+    #[test]
+    fn empty_inputs_yield_nothing() {
+        let addrs = ["127.0.0.1".parse::<IpAddr>().unwrap()];
+        let ports = [22u16];
+
+        for mut it in [
+            SocketIterator::new(&[], &ports),
+            SocketIterator::new(&addrs, &[]),
+        ] {
+            assert_eq!(it.size_hint(), (0, Some(0)));
+            assert_eq!(it.next(), None);
+            // Stays exhausted, as promised by the `FusedIterator` impl.
+            assert_eq!(it.next(), None);
+        }
     }
 }
