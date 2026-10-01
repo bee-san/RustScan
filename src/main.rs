@@ -7,6 +7,7 @@ use rustscan::input::{self, Config, Opts, ScriptsRequired};
 use rustscan::port_strategy::PortStrategy;
 use rustscan::scanner::Scanner;
 use rustscan::scripts::{init_scripts, Script, ScriptFile};
+use rustscan::tui::println_safe;
 use rustscan::{detail, funny_opening, output, warning};
 
 use colorful::{Color, Colorful};
@@ -96,7 +97,8 @@ fn main() {
         opts.accessible,
         opts.exclude_ports.unwrap_or_default(),
         opts.udp,
-    );
+    )
+    .with_open_port_output();
     debug!("Scanner finished building: {scanner:?}");
 
     let mut portscan_bench = NamedTimer::start("Portscan");
@@ -139,7 +141,7 @@ fn main() {
 
         // if option scripts is none, no script will be spawned
         if opts.greppable || opts.scripts == ScriptsRequired::None {
-            println!("{ip} -> [{ports_str}]");
+            println_safe(format_args!("{ip} -> [{ports_str}]"));
             continue;
         }
         detail!("Starting Script(s)", opts.greppable, opts.accessible);
@@ -221,12 +223,12 @@ fn print_opening(opts: &Opts) {
 `-' `-'`-----'`----'  `-'  `----'  `---' `-'  `-'`-' `-'
 The Modern Day Port Scanner."#;
 
-    println!("{}", s.gradient(Color::Green).bold());
+    println_safe(format_args!("{}", s.gradient(Color::Green).bold()));
     let info = r#"________________________________________
 : http://discord.skerritt.blog         :
 : https://github.com/RustScan/RustScan :
  --------------------------------------"#;
-    println!("{}", info.gradient(Color::Yellow).bold());
+    println_safe(format_args!("{}", info.gradient(Color::Yellow).bold()));
     funny_opening!();
 
     let config_path = opts

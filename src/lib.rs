@@ -7,7 +7,9 @@
 //! [`Scanner`](crate::scanner::Scanner) which in turn requires a
 //! [`PortStrategy`](crate::port_strategy::PortStrategy):
 //!
-//! ```rust
+//! This example is compiled but never executed by the test suite.
+//!
+//! ```no_run
 //! use async_std::task::block_on;
 //! use std::{net::IpAddr, time::Duration};
 //!
