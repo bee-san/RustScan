@@ -10,6 +10,8 @@ use socket_iterator::SocketIterator;
 use colored::Colorize;
 use futures::stream::{FuturesUnordered, StreamExt};
 use std::collections::BTreeMap;
+use std::future::poll_fn;
+use std::task::Poll;
 use std::{
     collections::{HashMap, HashSet},
     io,
@@ -20,6 +22,14 @@ use std::{
 };
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::{sleep, timeout};
+
+/// How many sockets the scan starts or finishes (counted together) between
+/// two polls of the runtime's I/O driver; see `Scanner::scan_sockets`.
+///
+/// Every round ends with a non-blocking poll of the OS selector, so this
+/// keeps the overhead far below 1% while bounding the time between two
+/// polls to about a millisecond on Linux.
+const WORK_PER_TURN: usize = 128;
 
 /// UDP payload lookup: port -> payload bytes
 ///
@@ -173,10 +183,8 @@ impl Scanner {
         // `FuturesUnordered`. Under Tokio's cooperative budget the future
         // would be forced to yield after ~128 sockets made progress, and the
         // `FuturesUnordered` would then re-poll every other ready socket just
-        // to have it return `Pending` again. Opt out, so a poll handles all
-        // ready sockets in one go, as it did with async-std. The future still
-        // returns `Pending` (and lets the runtime poll I/O and timers)
-        // whenever no socket is ready.
+        // to have it return `Pending` again. Opt out; `scan_sockets` yields to
+        // the runtime by itself, in rounds of `WORK_PER_TURN` sockets.
         tokio::task::unconstrained(self.scan()).await
     }
 
@@ -231,6 +239,15 @@ impl Scanner {
 
     /// Scans every socket yielded by `sockets`, keeping at most `batch_size`
     /// connection attempts in flight.
+    ///
+    /// Starts sockets and handles finished ones in rounds of at most
+    /// [`WORK_PER_TURN`] of either, and lets the runtime poll for I/O and fire
+    /// timers between rounds. One poll of the scan future otherwise lasts
+    /// until no socket is ready, which can take long: starting a whole large
+    /// batch at once, or a run of UDP probes that all finish straight away.
+    /// Sockets that finish in the meantime are only noticed once the poll
+    /// ends, so their results come late, and if the poll outlasts the timeout
+    /// their timers fire before their answers are seen.
     async fn scan_sockets(
         &self,
         mut sockets: SocketIterator<'_>,
@@ -240,26 +257,58 @@ impl Scanner {
     ) {
         let mut ftrs = FuturesUnordered::new();
 
-        for _ in 0..self.batch_size {
-            if let Some(socket) = sockets.next() {
-                ftrs.push(self.scan_socket(socket, udp_payloads.clone()));
+        loop {
+            let mut work = 0;
+            while work < WORK_PER_TURN {
+                let mut started = false;
+                if ftrs.len() < self.batch_size {
+                    if let Some(socket) = sockets.next() {
+                        ftrs.push(self.scan_socket(socket, udp_payloads.clone()));
+                        started = true;
+                        work += 1;
+                    }
+                }
+
+                // Poll once without waiting; this starts the new socket.
+                match poll_fn(|cx| Poll::Ready(ftrs.poll_next_unpin(cx))).await {
+                    Poll::Ready(Some(result)) => {
+                        self.record(result, found_sockets, errors);
+                        work += 1;
+                    }
+                    // Nothing in flight and nothing left to start.
+                    Poll::Ready(None) => return,
+                    // Nothing has finished; keep starting sockets while there is room.
+                    Poll::Pending if started => {}
+                    Poll::Pending => break,
+                }
+            }
+
+            if work >= WORK_PER_TURN {
+                tokio::task::yield_now().await;
             } else {
-                break;
+                // The batch is full (or complete) and every socket in it is
+                // waiting on the network.
+                match ftrs.next().await {
+                    Some(result) => self.record(result, found_sockets, errors),
+                    None => return,
+                }
             }
         }
+    }
 
-        while let Some(result) = ftrs.next().await {
-            if let Some(socket) = sockets.next() {
-                ftrs.push(self.scan_socket(socket, udp_payloads.clone()));
-            }
-
-            match result {
-                Ok(status) => found_sockets.push(status),
-                Err(e) => {
-                    let error_string = e.to_string();
-                    if errors.len() < self.ips.len() * 1000 {
-                        errors.insert(error_string);
-                    }
+    /// Records the outcome of one socket.
+    fn record(
+        &self,
+        result: io::Result<PortStatus>,
+        found_sockets: &mut Vec<PortStatus>,
+        errors: &mut HashSet<String>,
+    ) {
+        match result {
+            Ok(status) => found_sockets.push(status),
+            Err(e) => {
+                let error_string = e.to_string();
+                if errors.len() < self.ips.len() * 1000 {
+                    errors.insert(error_string);
                 }
             }
         }
