@@ -1,6 +1,5 @@
-use futures::future::{select, Either};
 use std::{
-    future::Future,
+    future::{poll_fn, Future},
     io,
     task::Poll,
     time::{Duration, Instant},
@@ -14,13 +13,7 @@ pub(super) async fn io_timeout<T>(
 ) -> io::Result<T> {
     let started = Instant::now();
     futures::pin_mut!(operation);
-    if let Poll::Ready(result) = futures::poll!(operation.as_mut()) {
-        return result;
-    }
-
-    let Some(deadline) = started.checked_add(duration) else {
-        return operation.await;
-    };
+    let mut delay = None;
 
     // Most replies arrive well before a normal scan timeout. Keep their timers
     // on Tokio's reactor to avoid registering each socket's deadline with a
@@ -29,18 +22,36 @@ pub(super) async fn io_timeout<T>(
     // precise timer immediately; neither phase changes the original deadline.
     // Allocate this state only for pending I/O. Keeping it out of the outer
     // future also keeps FuturesUnordered entries small for immediate results.
-    let delay = Box::pin(async move {
-        const PRECISE_WINDOW: Duration = Duration::from_millis(32);
-        if deadline.saturating_duration_since(Instant::now()) > PRECISE_WINDOW {
-            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline - PRECISE_WINDOW))
-                .await;
+    poll_fn(|context| {
+        if let Poll::Ready(result) = operation.as_mut().poll(context) {
+            return Poll::Ready(result);
         }
 
-        // OS waits avoid rounding every short timeout to the next millisecond.
-        async_io::Timer::at(deadline).await;
-    });
-    match select(operation, delay).await {
-        Either::Left((result, _)) => result,
-        Either::Right(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "future timed out")),
-    }
+        let delay = delay.get_or_insert_with(|| {
+            Box::pin(async move {
+                let Some(deadline) = started.checked_add(duration) else {
+                    return std::future::pending::<()>().await;
+                };
+                const PRECISE_WINDOW: Duration = Duration::from_millis(32);
+                if deadline.saturating_duration_since(Instant::now()) > PRECISE_WINDOW {
+                    tokio::time::sleep_until(tokio::time::Instant::from_std(
+                        deadline - PRECISE_WINDOW,
+                    ))
+                    .await;
+                }
+
+                // OS waits avoid rounding every short timeout to the next millisecond.
+                async_io::Timer::at(deadline).await;
+            })
+        });
+        if delay.as_mut().poll(context).is_ready() {
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "future timed out",
+            )))
+        } else {
+            Poll::Pending
+        }
+    })
+    .await
 }
