@@ -7,6 +7,11 @@ on:
     tags:
       - "*"
 
+# Build jobs only need to read the repository. The publish job below is the
+# only job that gets write access, and it only runs for tag pushes.
+permissions:
+  contents: read
+
 jobs:
   build-nix:
     env:
@@ -43,23 +48,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Cache cargo & target directories
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build binary
-        uses: houseabsolute/actions-rust-cross@v1
+        uses: houseabsolute/actions-rust-cross@21b0f18dc621b25bfae556ff2791fca4173121e8 # v1.0.8
         with:
           command: build
           target: ${{ matrix.target }}
           args: "--locked --release"
           strip: true
           toolchain: stable
-      - name: Upload artifacts
-        uses: houseabsolute/actions-rust-release@v0
+      - name: Package and upload artifacts
+        uses: houseabsolute/actions-rust-release@9e126fd5fc18f4cecf358b3909f3991ad59663dc # v1.0.1
         with:
           executable-name: rustscan
           target: ${{ matrix.target }}
           archive-name: ${{ matrix.name }}
           changes-file: ""
-          release-tag-prefix: "disabled"
 
   build-deb:
     needs: [build-nix]
@@ -70,7 +74,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install cargo-deb
         run: cargo install -f cargo-deb
-      - uses: awalsh128/cache-apt-pkgs-action@v1
+      - uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
         with:
           packages: musl-tools # provides musl-gcc
           version: 1.0
@@ -91,23 +95,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Cache cargo & target directories
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build binary
-        uses: houseabsolute/actions-rust-cross@v1
+        uses: houseabsolute/actions-rust-cross@21b0f18dc621b25bfae556ff2791fca4173121e8 # v1.0.8
         with:
           command: build
           target: x86_64-apple-darwin
           args: "--locked --release"
           strip: true
           toolchain: stable
-      - name: Upload artifacts
-        uses: houseabsolute/actions-rust-release@v0
+      - name: Package and upload artifacts
+        uses: houseabsolute/actions-rust-release@9e126fd5fc18f4cecf358b3909f3991ad59663dc # v1.0.1
         with:
           executable-name: rustscan
           target: x86_64-apple-darwin
           archive-name: x86_64-macos-rustscan
           changes-file: ""
-          release-tag-prefix: "disabled"
 
   build-macos-aarch64:
     env:
@@ -116,23 +119,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Cache cargo & target directories
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build binary
-        uses: houseabsolute/actions-rust-cross@v1
+        uses: houseabsolute/actions-rust-cross@21b0f18dc621b25bfae556ff2791fca4173121e8 # v1.0.8
         with:
           command: build
           target: aarch64-apple-darwin
           args: "--locked --release"
           strip: true
           toolchain: stable
-      - name: Upload artifacts
-        uses: houseabsolute/actions-rust-release@v0
+      - name: Package and upload artifacts
+        uses: houseabsolute/actions-rust-release@9e126fd5fc18f4cecf358b3909f3991ad59663dc # v1.0.1
         with:
           executable-name: rustscan
           target: aarch64-apple-darwin
           archive-name: aarch64-macos-rustscan
           changes-file: ""
-          release-tag-prefix: "disabled"
 
   build-windows:
     env:
@@ -153,24 +155,25 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Cache cargo & target directories
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build binary
-        uses: houseabsolute/actions-rust-cross@v1
+        uses: houseabsolute/actions-rust-cross@21b0f18dc621b25bfae556ff2791fca4173121e8 # v1.0.8
         with:
           command: build
           target: ${{ matrix.target }}
           args: "--locked --release"
           strip: true
           toolchain: stable
-      - name: Upload artifacts
-        uses: houseabsolute/actions-rust-release@v0
+      - name: Package and upload artifacts
+        uses: houseabsolute/actions-rust-release@9e126fd5fc18f4cecf358b3909f3991ad59663dc # v1.0.1
         with:
           executable-name: rustscan
           target: ${{ matrix.target }}
           archive-name: ${{ matrix.name }}
           changes-file: ""
-          release-tag-prefix: "disabled"
 
+  # Runs only for tag pushes (tags can only be created by maintainers), and
+  # only after every build job succeeded, so a release never ships partially.
   publish:
     if: github.ref_type == 'tag'
     needs:
@@ -181,16 +184,16 @@ jobs:
       - build-windows
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # create the release / upload release assets
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
           merge-multiple: true
       - name: Publish artifacts to GitHub release
-        if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
+          fail_on_unmatched_files: true
           files: |
             *.deb
             *.sha256
