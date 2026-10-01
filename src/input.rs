@@ -226,6 +226,11 @@ pub struct Opts {
     /// Closed ports are only printed; scripts are never run against them.
     #[arg(long)]
     pub closed: bool,
+
+    /// Milliseconds to wait after scanning a port (on every address) before
+    /// scanning the next one, for slow, low-noise scans. 0 disables the delay.
+    #[arg(long, default_value = "0", value_name = "MS")]
+    pub interval: u64,
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -283,7 +288,7 @@ impl Opts {
 
         merge_required!(
             addresses, greppable, accessible, batch_size, timeout, tries, scan_order, scripts,
-            command, udp, no_banner, closed
+            command, udp, no_banner, closed, interval
         );
     }
 
@@ -331,6 +336,7 @@ impl Default for Opts {
             exclude_addresses: None,
             udp: false,
             closed: false,
+            interval: 0,
         }
     }
 }
@@ -359,6 +365,7 @@ pub struct Config {
     udp: Option<bool>,
     no_banner: Option<bool>,
     closed: Option<bool>,
+    interval: Option<u64>,
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -377,6 +384,7 @@ impl Config {
     /// exclude_ports = [8080, 9090, 80]
     /// udp = false
     /// closed = false
+    /// interval = 0
     ///
     pub fn read(custom_config_path: Option<PathBuf>) -> Self {
         let mut content = String::new();
@@ -475,6 +483,7 @@ mod tests {
                 udp: Some(false),
                 no_banner: None,
                 closed: Some(false),
+                interval: None,
             }
         }
     }
@@ -685,5 +694,14 @@ mod tests {
                 range
             );
         }
+    }
+
+    #[test]
+    fn parses_interval_in_milliseconds() {
+        let opts = Opts::parse_from(["rustscan", "-a", "127.0.0.1", "--interval", "250"]);
+        assert_eq!(opts.interval, 250);
+
+        let opts = Opts::parse_from(["rustscan", "-a", "127.0.0.1"]);
+        assert_eq!(opts.interval, 0);
     }
 }

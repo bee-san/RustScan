@@ -9,6 +9,7 @@ use socket_iterator::SocketIterator;
 
 use async_std::net::TcpStream;
 use async_std::prelude::*;
+use async_std::task::sleep;
 use async_std::{io, net::UdpSocket};
 use colored::Colorize;
 use futures::stream::FuturesUnordered;
@@ -63,6 +64,7 @@ pub struct Scanner {
     udp: bool,
     print_open_ports: bool,
     report_closed: bool,
+    interval: Duration,
 }
 
 /// The outcome for a single socket, as returned by [`Scanner::run_with_status`].
@@ -101,6 +103,7 @@ impl Scanner {
             udp,
             print_open_ports: false,
             report_closed: false,
+            interval: Duration::ZERO,
         }
     }
 
@@ -121,6 +124,18 @@ impl Scanner {
     #[must_use]
     pub fn with_closed_ports(mut self) -> Self {
         self.report_closed = true;
+        self
+    }
+
+    /// Waits `interval` after scanning one port (on every address) before
+    /// scanning the next port, for slow, low-noise scans.
+    ///
+    /// Within a port, up to `batch_size` addresses are still scanned
+    /// concurrently. A zero interval (the default) scans all sockets in
+    /// batches without any delay.
+    #[must_use]
+    pub fn with_interval(mut self, interval: Duration) -> Self {
+        self.interval = interval;
         self
     }
 
@@ -149,9 +164,7 @@ impl Scanner {
             .filter(|&port| !self.exclude_ports.contains(port))
             .copied()
             .collect();
-        let mut socket_iterator: SocketIterator = SocketIterator::new(&self.ips, &ports);
         let mut found_sockets: Vec<PortStatus> = Vec::new();
-        let mut ftrs = FuturesUnordered::new();
         let mut errors: HashSet<String> = HashSet::new();
 
         // Build UDP payload lookup once (only if we are scanning UDP).
@@ -163,22 +176,56 @@ impl Scanner {
             None
         };
 
+        debug!("Start scanning sockets. \nBatch size {}\nNumber of ip-s {}\nNumber of ports {}\nTargets all together {}\nInterval between ports {:?}",
+            self.batch_size,
+            self.ips.len(),
+            ports.len(),
+            (self.ips.len() * ports.len()),
+            self.interval);
+
+        if self.interval.is_zero() {
+            let sockets = SocketIterator::new(&self.ips, &ports);
+            self.scan_sockets(sockets, &udp_payloads, &mut found_sockets, &mut errors)
+                .await;
+        } else {
+            // Scan one port (on every address) at a time and wait `interval`
+            // before moving on to the next port.
+            for (i, port) in ports.iter().enumerate() {
+                if i > 0 {
+                    sleep(self.interval).await;
+                }
+                let sockets = SocketIterator::new(&self.ips, std::slice::from_ref(port));
+                self.scan_sockets(sockets, &udp_payloads, &mut found_sockets, &mut errors)
+                    .await;
+            }
+        }
+
+        debug!("Typical socket connection errors {errors:?}");
+        debug!("Sockets found: {:?}", found_sockets);
+        found_sockets
+    }
+
+    /// Scans every socket yielded by `sockets`, keeping at most `batch_size`
+    /// connection attempts in flight.
+    async fn scan_sockets(
+        &self,
+        mut sockets: SocketIterator<'_>,
+        udp_payloads: &Option<Arc<UdpPayloadLookup>>,
+        found_sockets: &mut Vec<PortStatus>,
+        errors: &mut HashSet<String>,
+    ) {
+        let mut ftrs = FuturesUnordered::new();
+
         for _ in 0..self.batch_size {
-            if let Some(socket) = socket_iterator.next() {
+            if let Some(socket) = sockets.next() {
                 ftrs.push(self.scan_socket(socket, udp_payloads.clone()));
             } else {
                 break;
             }
         }
 
-        debug!("Start scanning sockets. \nBatch size {}\nNumber of ip-s {}\nNumber of ports {}\nTargets all together {} ",
-            self.batch_size,
-            self.ips.len(),
-            ports.len(),
-            (self.ips.len() * ports.len()));
-
         while let Some(result) = ftrs.next().await {
-            if let Some(socket) = socket_iterator.next() {
+            if let Some(socket) = sockets.next() {
                 ftrs.push(self.scan_socket(socket, udp_payloads.clone()));
             }
 
@@ -192,9 +239,6 @@ impl Scanner {
                 }
             }
         }
-        debug!("Typical socket connection errors {errors:?}");
-        debug!("Sockets found: {:?}", found_sockets);
-        found_sockets
     }
 
     /// Given a socket, scan it self.tries times.
@@ -446,6 +490,18 @@ mod tests {
     #[test]
     fn closed_port_reporting_is_opt_in() {
         assert!(test_scanner().with_closed_ports().report_closed);
+    }
+
+    #[test]
+    fn no_interval_by_default() {
+        assert!(test_scanner().interval.is_zero());
+    }
+
+    #[test]
+    fn with_interval_sets_the_delay_between_ports() {
+        let scanner = test_scanner().with_interval(Duration::from_millis(250));
+
+        assert_eq!(scanner.interval, Duration::from_millis(250));
     }
 
     /// Regression test for https://github.com/bee-san/RustScan/issues/933:

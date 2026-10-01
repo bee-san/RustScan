@@ -102,6 +102,9 @@ fn main() {
     if opts.closed {
         scanner = scanner.with_closed_ports();
     }
+    if opts.interval > 0 {
+        scanner = scanner.with_interval(Duration::from_millis(opts.interval));
+    }
     debug!("Scanner finished building: {scanner:?}");
 
     let mut portscan_bench = NamedTimer::start("Portscan");
