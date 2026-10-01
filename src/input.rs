@@ -141,7 +141,8 @@ pub struct Opts {
     #[arg(long, default_value = "1")]
     pub tries: u8,
 
-    /// Automatically ups the ULIMIT with the value you provided.
+    /// Automatically increases the Unix file-descriptor limit.
+    #[cfg_attr(not(unix), arg(hide = true))]
     #[arg(short, long)]
     pub ulimit: Option<usize>,
 
@@ -190,6 +191,27 @@ impl Opts {
         }
 
         opts
+    }
+
+    /// Validates options whose availability or semantics depend on the
+    /// operating system.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an option is unsupported on the current platform.
+    pub fn validate_platform(&self) -> Result<(), String> {
+        #[cfg(not(unix))]
+        {
+            if self.ulimit.is_some() {
+                return Err(
+                    "--ulimit is only supported on Unix-like operating systems. \
+                     On Windows, use --batch-size (-b) to control scan concurrency."
+                        .to_owned(),
+                );
+            }
+        }
+
+        Ok(())
     }
 
     /// Reads the command line arguments into an Opts struct and merge
@@ -309,11 +331,18 @@ impl Config {
     pub fn read(custom_config_path: Option<PathBuf>) -> Self {
         let mut content = String::new();
         let config_path = custom_config_path.unwrap_or_else(|| {
-            let path = default_config_path();
-            match path.exists() {
-                true => path,
-                false => old_default_config_path(),
+            // Try the XDG-idiomatic location first, then fall back to legacy
+            // paths so existing users keep working unchanged.
+            for path in [
+                default_config_path(),
+                legacy_dot_config_path(),
+                old_default_config_path(),
+            ] {
+                if path.exists() {
+                    return path;
+                }
             }
+            default_config_path()
         });
 
         if config_path.exists() {
@@ -326,7 +355,9 @@ impl Config {
         let config: Config = match toml::from_str(&content) {
             Ok(config) => config,
             Err(e) => {
-                println!("Found {e} in configuration file.\nAborting scan.\n");
+                crate::tui::println_safe(format_args!(
+                    "Found {e} in configuration file.\nAborting scan.\n"
+                ));
                 std::process::exit(1);
             }
         };
@@ -335,8 +366,21 @@ impl Config {
     }
 }
 
-/// Constructs default path to config toml
+/// Returns the preferred config file path: `$XDG_CONFIG_HOME/rustscan/config.toml`
+/// on Linux (with the usual `~/.config` fallback when the variable is unset),
+/// and the platform-equivalent `dirs::config_dir()` location on macOS / Windows.
 pub fn default_config_path() -> PathBuf {
+    let Some(mut config_path) = dirs::config_dir() else {
+        panic!("Could not infer config file path.");
+    };
+    config_path.push("rustscan");
+    config_path.push("config.toml");
+    config_path
+}
+
+/// Returns the transitional `$XDG_CONFIG_HOME/.rustscan.toml` path that older
+/// builds wrote to. Kept readable for backwards compatibility.
+pub fn legacy_dot_config_path() -> PathBuf {
     let Some(mut config_path) = dirs::config_dir() else {
         panic!("Could not infer config file path.");
     };
@@ -410,6 +454,82 @@ mod tests {
     }
 
     #[test]
+    fn parses_explicit_batch_size() {
+        let opts = Opts::parse_from(["rustscan", "-a", "127.0.0.1", "-b", "1234"]);
+
+        assert_eq!(opts.batch_size, 1234);
+    }
+
+    #[test]
+    fn parses_explicit_long_batch_size() {
+        let opts = Opts::parse_from(["rustscan", "-a", "127.0.0.1", "--batch-size", "4321"]);
+
+        assert_eq!(opts.batch_size, 4321);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_platform_validation_accepts_batch_size() {
+        let opts = Opts::parse_from(["rustscan", "-a", "127.0.0.1", "--batch-size", "500"]);
+
+        assert!(opts.validate_platform().is_ok());
+        assert_eq!(opts.batch_size, 500);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_rejects_ulimit() {
+        let opts = Opts::parse_from(["rustscan", "-a", "127.0.0.1", "--ulimit", "5000"]);
+
+        let error = opts
+            .validate_platform()
+            .expect_err("Windows must reject --ulimit");
+
+        assert!(error.contains("--ulimit"));
+        assert!(error.contains("Unix"));
+        assert!(error.contains("--batch-size"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_hides_ulimit_from_help() {
+        let help = Opts::command().render_long_help().to_string();
+
+        assert!(
+            !help.contains("--ulimit"),
+            "--ulimit should not be advertised on Windows"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_rejects_ulimit_from_config_merge() {
+        let mut opts = Opts {
+            no_config: false,
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.ulimit = Some(5_000);
+
+        opts.merge(&config);
+
+        let error = opts
+            .validate_platform()
+            .expect_err("Windows must reject --ulimit supplied by configuration");
+
+        assert!(error.contains("--ulimit"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn unix_platform_validation_accepts_ulimit() {
+        let opts = Opts::parse_from(["rustscan", "-a", "127.0.0.1", "--ulimit", "5000"]);
+
+        assert!(opts.validate_platform().is_ok());
+        assert_eq!(opts.ulimit, Some(5_000));
+    }
+
+    #[test]
     fn opts_no_merge_when_config_is_ignored() {
         let mut opts = Opts::default();
         let config = Config::default();
@@ -454,4 +574,5 @@ mod tests {
         assert_eq!(opts.ulimit, config.ulimit);
         assert_eq!(opts.resolver, config.resolver);
     }
+
 }

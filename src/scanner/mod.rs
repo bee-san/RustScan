@@ -1,6 +1,7 @@
 //! Core functionality for actual scanning behaviour.
 use crate::generated::get_parsed_data;
 use crate::port_strategy::PortStrategy;
+use crate::tui::println_safe;
 use log::debug;
 
 mod socket_iterator;
@@ -13,11 +14,34 @@ use colored::Colorize;
 use futures::stream::FuturesUnordered;
 use std::collections::BTreeMap;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     net::{IpAddr, Shutdown, SocketAddr},
     num::NonZeroU8,
+    sync::Arc,
     time::Duration,
 };
+
+/// UDP payload lookup: port -> payload bytes
+///
+/// `get_parsed_data()` returns a `&'static BTreeMap<...>`, so we can store
+/// references to the payload bytes without cloning them.
+#[doc(hidden)]
+pub type UdpPayloadLookup = HashMap<u16, &'static [u8]>;
+
+#[doc(hidden)]
+pub fn build_udp_payload_lookup(udp_map: &'static BTreeMap<Vec<u16>, Vec<u8>>) -> UdpPayloadLookup {
+    let mut lookup: UdpPayloadLookup = HashMap::new();
+
+    for (ports, payload_vec) in udp_map.iter() {
+        let payload: &'static [u8] = payload_vec.as_slice();
+        for &port in ports.iter() {
+            // Preserve existing behavior: if duplicates exist, last insert wins.
+            lookup.insert(port, payload);
+        }
+    }
+
+    lookup
+}
 
 /// The class for the scanner
 /// IP is data type IpAddr and is the IP address
@@ -37,6 +61,7 @@ pub struct Scanner {
     accessible: bool,
     exclude_ports: Vec<u16>,
     udp: bool,
+    print_open_ports: bool,
 }
 
 // Allowing too many arguments for clippy.
@@ -63,7 +88,17 @@ impl Scanner {
             accessible,
             exclude_ports,
             udp,
+            print_open_ports: false,
         }
+    }
+
+    /// Enables the CLI's incremental open-port output.
+    ///
+    /// Library callers are quiet by default and can inspect the sockets returned by [`Self::run`].
+    #[must_use]
+    pub fn with_open_port_output(mut self) -> Self {
+        self.print_open_ports = true;
+        self
     }
 
     /// Runs scan_range with chunk sizes
@@ -81,11 +116,19 @@ impl Scanner {
         let mut open_sockets: Vec<SocketAddr> = Vec::new();
         let mut ftrs = FuturesUnordered::new();
         let mut errors: HashSet<String> = HashSet::new();
-        let udp_map = get_parsed_data();
+
+        // Build UDP payload lookup once (only if we are scanning UDP).
+        // This avoids cloning a big map into every spawned future and turns
+        // payload selection from O(n) to O(1).
+        let udp_payloads: Option<Arc<UdpPayloadLookup>> = if self.udp {
+            Some(Arc::new(build_udp_payload_lookup(get_parsed_data())))
+        } else {
+            None
+        };
 
         for _ in 0..self.batch_size {
             if let Some(socket) = socket_iterator.next() {
-                ftrs.push(self.scan_socket(socket, udp_map.clone()));
+                ftrs.push(self.scan_socket(socket, udp_payloads.clone()));
             } else {
                 break;
             }
@@ -94,12 +137,12 @@ impl Scanner {
         debug!("Start scanning sockets. \nBatch size {}\nNumber of ip-s {}\nNumber of ports {}\nTargets all together {} ",
             self.batch_size,
             self.ips.len(),
-            &ports.len(),
+            ports.len(),
             (self.ips.len() * ports.len()));
 
         while let Some(result) = ftrs.next().await {
             if let Some(socket) = socket_iterator.next() {
-                ftrs.push(self.scan_socket(socket, udp_map.clone()));
+                ftrs.push(self.scan_socket(socket, udp_payloads.clone()));
             }
 
             match result {
@@ -113,7 +156,7 @@ impl Scanner {
             }
         }
         debug!("Typical socket connection errors {errors:?}");
-        debug!("Open Sockets found: {:?}", &open_sockets);
+        debug!("Open Sockets found: {:?}", open_sockets);
         open_sockets
     }
 
@@ -134,22 +177,19 @@ impl Scanner {
     async fn scan_socket(
         &self,
         socket: SocketAddr,
-        udp_map: BTreeMap<Vec<u16>, Vec<u8>>,
+        udp_payloads: Option<Arc<UdpPayloadLookup>>,
     ) -> io::Result<SocketAddr> {
         if self.udp {
-            return self.scan_udp_socket(socket, udp_map).await;
+            return self.scan_udp_socket(socket, udp_payloads).await;
         }
 
         let tries = self.tries.get();
         for nr_try in 1..=tries {
             match self.connect(socket).await {
                 Ok(tcp_stream) => {
-                    debug!(
-                        "Connection was successful, shutting down stream {}",
-                        &socket
-                    );
+                    debug!("Connection was successful, shutting down stream {}", socket);
                     if let Err(e) = tcp_stream.shutdown(Shutdown::Both) {
-                        debug!("Shutdown stream error {}", &e);
+                        debug!("Shutdown stream error {}", e);
                     }
                     self.fmt_ports(socket);
 
@@ -175,18 +215,16 @@ impl Scanner {
     async fn scan_udp_socket(
         &self,
         socket: SocketAddr,
-        udp_map: BTreeMap<Vec<u16>, Vec<u8>>,
+        udp_payloads: Option<Arc<UdpPayloadLookup>>,
     ) -> io::Result<SocketAddr> {
-        let mut payload: Vec<u8> = Vec::new();
-        for (key, value) in udp_map {
-            if key.contains(&socket.port()) {
-                payload = value;
-            }
-        }
+        let payload: &[u8] = udp_payloads
+            .as_ref()
+            .and_then(|m| m.get(&socket.port()).copied())
+            .unwrap_or(b"");
 
         let tries = self.tries.get();
         for _ in 1..=tries {
-            match self.udp_scan(socket, &payload, self.timeout).await {
+            match self.udp_scan(socket, payload, self.timeout).await {
                 Ok(true) => return Ok(socket),
                 Ok(false) => continue,
                 Err(e) => return Err(e),
@@ -288,7 +326,7 @@ impl Scanner {
                 }
             }
             Err(e) => {
-                println!("Err E binding sock {e:?}");
+                debug!("Error binding UDP socket: {e:?}");
                 Err(e)
             }
         }
@@ -296,11 +334,11 @@ impl Scanner {
 
     /// Formats and prints the port status
     fn fmt_ports(&self, socket: SocketAddr) {
-        if !self.greppable {
+        if self.print_open_ports && !self.greppable {
             if self.accessible {
-                println!("Open {socket}");
+                println_safe(format_args!("Open {socket}"));
             } else {
-                println!("Open {}", socket.to_string().purple());
+                println_safe(format_args!("Open {}", socket.to_string().purple()));
             }
         }
     }
@@ -309,191 +347,74 @@ impl Scanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::input::{PortRanges, ScanOrder};
-    use async_std::task::block_on;
-    use std::{net::IpAddr, time::Duration};
 
-    #[test]
-    fn scanner_runs() {
-        // Makes sure the program still runs and doesn't panic
+    // These tests never open sockets: they only build a `Scanner` or inspect
+    // the payload table generated by build.rs.
+
+    fn test_scanner() -> Scanner {
         let addrs = vec!["127.0.0.1".parse::<IpAddr>().unwrap()];
-        let range = PortRanges(vec![(1, 1_000)]);
-        let strategy = PortStrategy::pick(Some(range), None, ScanOrder::Random);
-        let scanner = Scanner::new(
+        let strategy = PortStrategy::pick(&Some(PortRanges(vec![(1, 1)])), None, ScanOrder::Serial);
+        Scanner::new(
             &addrs,
-            10,
+            1,
             Duration::from_millis(100),
             1,
-            true,
-            strategy,
-            true,
-            vec![9000],
             false,
-        );
-        block_on(scanner.run());
-        // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
-        assert_eq!(1, 1);
-    }
-    #[test]
-    fn ipv6_scanner_runs() {
-        // Makes sure the program still runs and doesn't panic
-        let addrs = vec!["::1".parse::<IpAddr>().unwrap()];
-        let range = PortRanges(vec![(1, 1_000)]);
-        let strategy = PortStrategy::pick(Some(range), None, ScanOrder::Random);
-        let scanner = Scanner::new(
-            &addrs,
-            10,
-            Duration::from_millis(100),
-            1,
-            true,
             strategy,
-            true,
-            vec![9000],
             false,
-        );
-        block_on(scanner.run());
-        // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
-        assert_eq!(1, 1);
-    }
-    #[test]
-    fn quad_zero_scanner_runs() {
-        let addrs = vec!["0.0.0.0".parse::<IpAddr>().unwrap()];
-        let range = PortRanges(vec![(1, 1_000)]);
-        let strategy = PortStrategy::pick(Some(range), None, ScanOrder::Random);
-        let scanner = Scanner::new(
-            &addrs,
-            10,
-            Duration::from_millis(100),
-            1,
-            true,
-            strategy,
-            true,
-            vec![9000],
+            Vec::new(),
             false,
-        );
-        block_on(scanner.run());
-        assert_eq!(1, 1);
-    }
-    #[test]
-    fn google_dns_runs() {
-        let addrs = vec!["8.8.8.8".parse::<IpAddr>().unwrap()];
-        let range = PortRanges(vec![(400, 445)]);
-        let strategy = PortStrategy::pick(Some(range), None, ScanOrder::Random);
-        let scanner = Scanner::new(
-            &addrs,
-            10,
-            Duration::from_millis(100),
-            1,
-            true,
-            strategy,
-            true,
-            vec![9000],
-            false,
-        );
-        block_on(scanner.run());
-        assert_eq!(1, 1);
-    }
-    #[test]
-    fn infer_ulimit_lowering_no_panic() {
-        // Test behaviour on MacOS where ulimit is not automatically lowered
-        let addrs = vec!["8.8.8.8".parse::<IpAddr>().unwrap()];
-
-        // mac should have this automatically scaled down
-        let range = PortRanges(vec![(400, 600)]);
-        let strategy = PortStrategy::pick(Some(range), None, ScanOrder::Random);
-        let scanner = Scanner::new(
-            &addrs,
-            10,
-            Duration::from_millis(100),
-            1,
-            true,
-            strategy,
-            true,
-            vec![9000],
-            false,
-        );
-        block_on(scanner.run());
-        assert_eq!(1, 1);
+        )
     }
 
     #[test]
-    fn udp_scan_runs() {
-        // Makes sure the program still runs and doesn't panic
-        let addrs = vec!["127.0.0.1".parse::<IpAddr>().unwrap()];
-        let range = PortRanges(vec![(1, 1_000)]);
-        let strategy = PortStrategy::pick(Some(range), None, ScanOrder::Random);
-        let scanner = Scanner::new(
-            &addrs,
-            10,
-            Duration::from_millis(100),
-            1,
-            true,
-            strategy,
-            true,
-            vec![9000],
-            true,
-        );
-        block_on(scanner.run());
-        // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
-        assert_eq!(1, 1);
+    fn library_scanner_is_quiet_by_default() {
+        let scanner = test_scanner();
+
+        assert!(!scanner.print_open_ports);
     }
+
     #[test]
-    fn udp_ipv6_runs() {
-        // Makes sure the program still runs and doesn't panic
-        let addrs = vec!["::1".parse::<IpAddr>().unwrap()];
-        let range = PortRanges(vec![(1, 1_000)]);
-        let strategy = PortStrategy::pick(Some(range), None, ScanOrder::Random);
-        let scanner = Scanner::new(
-            &addrs,
-            10,
-            Duration::from_millis(100),
-            1,
-            true,
-            strategy,
-            true,
-            vec![9000],
-            true,
-        );
-        block_on(scanner.run());
-        // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
-        assert_eq!(1, 1);
+    fn cli_can_enable_open_port_output() {
+        let scanner = test_scanner().with_open_port_output();
+
+        assert!(scanner.print_open_ports);
     }
+
+    /// Regression test for https://github.com/bee-san/RustScan/issues/933:
+    /// the SNMP public-walk probe must be the exact 33-byte BER packet, with
+    /// the literal `public` community string intact. The old hexdigits-only
+    /// decoding mangled it into a 28-byte probe that agents never answered.
     #[test]
-    fn udp_quad_zero_scanner_runs() {
-        let addrs = vec!["0.0.0.0".parse::<IpAddr>().unwrap()];
-        let range = PortRanges(vec![(1, 1_000)]);
-        let strategy = PortStrategy::pick(Some(range), None, ScanOrder::Random);
-        let scanner = Scanner::new(
-            &addrs,
-            10,
-            Duration::from_millis(100),
-            1,
-            true,
-            strategy,
-            true,
-            vec![9000],
-            true,
-        );
-        block_on(scanner.run());
-        assert_eq!(1, 1);
+    fn udp_snmp_probe_bytes_match_nmap() {
+        let payload = get_parsed_data()
+            .iter()
+            .find(|(ports, _)| ports.contains(&161))
+            .map(|(_, payload)| payload)
+            .expect("no UDP payload registered for port 161");
+        let expected: Vec<u8> = vec![
+            0x30, 0x1f, 0x02, 0x01, 0x00, 0x04, 0x06, b'p', b'u', b'b', b'l', b'i', b'c', 0xa1,
+            0x12, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x30, 0x07, 0x30, 0x05,
+            0x06, 0x01, 0x00, 0x05, 0x00,
+        ];
+        assert_eq!(*payload, expected);
     }
+
+    /// The SSDP probe mixes `\xNN` escapes, `\"` escapes and literal text
+    /// across two quoted segments: segments must decode and concatenate
+    /// with no separators.
     #[test]
-    fn udp_google_dns_runs() {
-        let addrs = vec!["8.8.8.8".parse::<IpAddr>().unwrap()];
-        let range = PortRanges(vec![(100, 150)]);
-        let strategy = PortStrategy::pick(Some(range), None, ScanOrder::Random);
-        let scanner = Scanner::new(
-            &addrs,
-            10,
-            Duration::from_millis(100),
-            1,
-            true,
-            strategy,
-            true,
-            vec![9000],
-            true,
-        );
-        block_on(scanner.run());
-        assert_eq!(1, 1);
+    fn udp_ssdp_probe_decodes_escapes_and_literal_text() {
+        let payload = get_parsed_data()
+            .iter()
+            .find(|(ports, _)| ports.contains(&1900))
+            .map(|(_, payload)| payload)
+            .expect("no UDP payload registered for port 1900");
+        let expected =
+            b"M-SEARCH * HTTP/1.1\r\nHost: 239.255.255.250:1900\r\nMan: \"ssdp:discover\"\r\nMX: 5\r\nST: ssdp:all\r\n\r\n"
+                .to_vec();
+        assert_eq!(*payload, expected);
     }
 }

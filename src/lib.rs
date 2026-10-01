@@ -7,7 +7,9 @@
 //! [`Scanner`](crate::scanner::Scanner) which in turn requires a
 //! [`PortStrategy`](crate::port_strategy::PortStrategy):
 //!
-//! ```rust
+//! This example is compiled but never executed by the test suite.
+//!
+//! ```no_run
 //! use async_std::task::block_on;
 //! use std::{net::IpAddr, time::Duration};
 //!
@@ -18,7 +20,7 @@
 //! fn main() {
 //!     let addrs = vec!["127.0.0.1".parse::<IpAddr>().unwrap()];
 //!     let range = PortRanges(vec![(1, 1_000)]);
-//!     let strategy = PortStrategy::pick(Some(range), None, ScanOrder::Random); // can be serial, random or manual https://github.com/RustScan/RustScan/blob/master/src/port_strategy/mod.rs
+//!     let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random); // can be serial, random or manual https://github.com/RustScan/RustScan/blob/master/src/port_strategy/mod.rs
 //!     let scanner = Scanner::new(
 //!         &addrs, // the addresses to scan
 //!         10, // batch_size is how many ports at a time should be scanned

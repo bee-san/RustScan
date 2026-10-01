@@ -1,19 +1,6 @@
-use bit_set::BitSet;
 use gcd::Gcd;
-use rand::Rng;
+use rand::RngExt;
 use std::convert::TryInto;
-
-pub struct RangeIterator {
-    active: bool,
-    total: u32,
-    normalized_first_pick: u32,
-    normalized_pick: u32,
-    step: u32,
-    ranges: Vec<(u32, u32)>,
-    prefix: Vec<u32>,
-    serial_itr: Option<Box<dyn Iterator<Item = u16>>>,
-    serial_itr_bitset: Option<BitSet>,
-}
 
 /// Yields ports produced from a collection of (possibly overlapping)
 /// inclusive `u16` ranges in two modes:
@@ -31,21 +18,31 @@ pub struct RangeIterator {
 /// **Serial** — `RangeIterator::new_serial`:
 ///     Iterates the input ranges in the **original input order** and yields
 ///     each port the first time it is encountered. Duplicate ports (from
-///     overlapping ranges) are skipped using a small `BitSet` of size 65_536.
-///
+///     overlapping ranges) are skipped using a 65_536-entry "seen" table.
+pub struct RangeIterator {
+    active: bool,
+    total: u32,
+    normalized_first_pick: u32,
+    normalized_pick: u32,
+    step: u32,
+    ranges: Vec<(u32, u32)>,
+    prefix: Vec<u32>,
+    serial_itr: Option<Box<dyn Iterator<Item = u16>>>,
+    /// `seen[port]` is true once `port` has been yielded (serial mode only).
+    serial_seen: Option<Vec<bool>>,
+}
 
 impl RangeIterator {
     /// Construct a randomized iterator (LCG permutation).
     ///
     /// Preconditions:
     /// - `input` must contain at least one `(u16,u16)`
-    /// and each pair must satisfy `start <= end`.
-
+    ///   and each pair must satisfy `start <= end`.
     pub fn new_random(input: &[(u16, u16)]) -> Self {
         // normalize & merge into (start, len) u32 pairs
         // Example: [(10,12),(11,15)] -> merged [(10,6)]
         let mut ranges: Vec<(u32, u32)> = input
-            .into_iter()
+            .iter()
             .map(|(s, e)| {
                 let start = *s as u32;
                 let end_excl = (*e as u32) + 1; // convert inclusive -> exclusive
@@ -98,12 +95,12 @@ impl RangeIterator {
             ranges: merged,
             prefix,
             serial_itr: None,
-            serial_itr_bitset: None,
+            serial_seen: None,
         }
     }
 
     /// Construct a serial iterator that yields ports in original input order,
-    /// skipping duplicates. The deduplication is done on the fly with a BitSet.
+    /// skipping duplicates. The deduplication is done on the fly with a seen-table.
     ///
     /// Preconditions:
     /// - `input` must contain at least one `(u16,u16)` and each pair must satisfy `start <= end`.
@@ -114,8 +111,8 @@ impl RangeIterator {
         let serial_itr = input.into_iter().flat_map(|(start, end)| start..=end);
 
         let serial_itr_boxed: Box<dyn Iterator<Item = u16>> = Box::new(serial_itr);
-        // BitSet needs to be large enough for ports 0..=65535
-        let bitset = BitSet::with_capacity(65536);
+        // One entry per possible port (0..=65535).
+        let seen = vec![false; usize::from(u16::MAX) + 1];
 
         Self {
             active: true,
@@ -126,7 +123,7 @@ impl RangeIterator {
             ranges: Vec::new(),
             prefix: Vec::new(),
             serial_itr: Some(serial_itr_boxed),
-            serial_itr_bitset: Some(bitset),
+            serial_seen: Some(seen),
         }
     }
 }
@@ -150,19 +147,17 @@ impl Iterator for RangeIterator {
         }
 
         // SERIAL iterator fast-path: preserve original input order but skip duplicates.
-        if let (Some(it), Some(bitset)) =
-            (self.serial_itr.as_mut(), self.serial_itr_bitset.as_mut())
-        {
-            while let Some(p) = it.next() {
-                // `insert` returns true when the value was NOT present before.
-                if bitset.insert(p as usize) {
+        if let (Some(it), Some(seen)) = (self.serial_itr.as_mut(), self.serial_seen.as_mut()) {
+            for p in it.by_ref() {
+                // Yield each port only the first time it is seen.
+                if !std::mem::replace(&mut seen[usize::from(p)], true) {
                     return Some(p);
                 }
                 // otherwise skip duplicate and continue
             }
             // serial iterator exhausted: drop it and mark inactive
             self.serial_itr = None;
-            self.serial_itr_bitset = None;
+            self.serial_seen = None;
             self.active = false;
             return None;
         }

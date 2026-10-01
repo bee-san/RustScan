@@ -1,20 +1,55 @@
 //! Utilities for terminal output during scanning.
 
+use std::io::Write;
+
+/// Prints a single line to stdout without ever panicking.
+///
+/// `println!` panics when writing to stdout fails, which is fatal under the
+/// `panic = "abort"` release profile. That includes the `BrokenPipe` error
+/// produced when a downstream consumer (e.g. `rustscan -g ... | head`)
+/// closes the pipe, so instead the process exits quietly when that happens.
+/// Other output errors are reported on stderr before exiting.
+///
+/// All user-facing output should go through this function (the `warning!`,
+/// `detail!`, `output!` and `funny_opening!` macros already do) instead of
+/// `println!`.
+pub fn println_safe(args: std::fmt::Arguments<'_>) {
+    match writeln!(std::io::stdout().lock(), "{args}") {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+            // the reader end of the pipe is gone; nothing left to print to
+            std::process::exit(0);
+        }
+        Err(e) => {
+            let _ = writeln!(std::io::stderr(), "rustscan: failed writing to stdout: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Terminal User Interface Module for RustScan
 /// Defines macros to use
 #[macro_export]
 macro_rules! warning {
     ($name:expr) => {
-        println!("{} {}", ansi_term::Colour::Red.bold().paint("[!]"), $name);
+        $crate::tui::println_safe(format_args!(
+            "{} {}",
+            ansi_term::Colour::Red.bold().paint("[!]"),
+            $name
+        ));
     };
     ($name:expr, $greppable:expr, $accessible:expr) => {
         // if not greppable then print, otherwise no else statement so do not print.
         if !$greppable {
             if $accessible {
                 // Don't print the ascii art
-                println!("{}", $name);
+                $crate::tui::println_safe(format_args!("{}", $name));
             } else {
-                println!("{} {}", ansi_term::Colour::Red.bold().paint("[!]"), $name);
+                $crate::tui::println_safe(format_args!(
+                    "{} {}",
+                    ansi_term::Colour::Red.bold().paint("[!]"),
+                    $name
+                ));
             }
         }
     };
@@ -23,16 +58,24 @@ macro_rules! warning {
 #[macro_export]
 macro_rules! detail {
     ($name:expr) => {
-        println!("{} {}", ansi_term::Colour::Blue.bold().paint("[~]"), $name);
+        $crate::tui::println_safe(format_args!(
+            "{} {}",
+            ansi_term::Colour::Blue.bold().paint("[~]"),
+            $name
+        ));
     };
     ($name:expr, $greppable:expr, $accessible:expr) => {
         // if not greppable then print, otherwise no else statement so do not print.
         if !$greppable {
             if $accessible {
                 // Don't print the ascii art
-                println!("{}", $name);
+                $crate::tui::println_safe(format_args!("{}", $name));
             } else {
-                println!("{} {}", ansi_term::Colour::Blue.bold().paint("[~]"), $name);
+                $crate::tui::println_safe(format_args!(
+                    "{} {}",
+                    ansi_term::Colour::Blue.bold().paint("[~]"),
+                    $name
+                ));
             }
         }
     };
@@ -41,24 +84,24 @@ macro_rules! detail {
 #[macro_export]
 macro_rules! output {
     ($name:expr) => {
-        println!(
+        $crate::tui::println_safe(format_args!(
             "{} {}",
             ansi_term::Colour::RGB(0, 255, 9).bold().paint("[>]"),
             $name
-        );
+        ));
     };
     ($name:expr, $greppable:expr, $accessible:expr) => {
         // if not greppable then print, otherwise no else statement so do not print.
         if !$greppable {
             if $accessible {
                 // Don't print the ascii art
-                println!("{}", $name);
+                $crate::tui::println_safe(format_args!("{}", $name));
             } else {
-                println!(
+                $crate::tui::println_safe(format_args!(
                     "{} {}",
                     ansi_term::Colour::RGB(0, 255, 9).bold().paint("[>]"),
                     $name
-                );
+                ));
             }
         }
     };
@@ -101,6 +144,6 @@ macro_rules! funny_opening {
         ];
         let random_quote = quotes.choose(&mut rand::rng()).unwrap();
 
-        println!("{}\n", random_quote);
+        $crate::tui::println_safe(format_args!("{}\n", random_quote));
     };
 }

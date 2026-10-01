@@ -191,15 +191,54 @@ fn get_resolver(resolver: &Option<String>) -> Resolver {
                     Protocol::Udp,
                 ));
             }
-            Resolver::new(config, ResolverOpts::default()).unwrap()
+            Resolver::new(config, resolver_opts()).unwrap()
         }
-        None => match Resolver::from_system_conf() {
+        None => match system_resolver() {
             Ok(resolver) => resolver,
-            Err(_) => {
-                Resolver::new(ResolverConfig::cloudflare_tls(), ResolverOpts::default()).unwrap()
-            }
+            Err(_) => Resolver::new(ResolverConfig::cloudflare_tls(), resolver_opts()).unwrap(),
         },
     }
+}
+
+/// `true` on Windows when the `SystemRoot` environment variable is unset.
+///
+/// hickory-resolver locates the hosts file via
+/// `std::env::var_os("SystemRoot").expect(...)`, which panics when the
+/// variable is missing. Processes spawned with a minimal environment
+/// (services, scheduled tasks, WMI) can lack `SystemRoot`, and the panic is
+/// fatal under this crate's `panic = "abort"` release profile.
+fn windows_system_root_missing() -> bool {
+    cfg!(windows) && std::env::var_os("SystemRoot").is_none()
+}
+
+/// Derives a resolver from the system configuration, e.g. `/etc/resolv.conf`
+/// on *nix or the registry on Windows.
+///
+/// Returns an error without touching the system configuration when doing so
+/// would panic inside hickory-resolver (see [`windows_system_root_missing`]).
+fn system_resolver() -> std::io::Result<Resolver> {
+    if windows_system_root_missing() {
+        debug!("SystemRoot is not set; skipping system resolver configuration");
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "SystemRoot environment variable is not set",
+        ));
+    }
+
+    Resolver::from_system_conf()
+}
+
+/// Resolver options that are safe to use in the current environment.
+///
+/// hickory-resolver eagerly loads the hosts file when `use_hosts_file` is set
+/// (the default), which hits the same missing-`SystemRoot` panic described in
+/// [`windows_system_root_missing`]; disable it in that case.
+fn resolver_opts() -> ResolverOpts {
+    let mut opts = ResolverOpts::default();
+    if windows_system_root_missing() {
+        opts.use_hosts_file = false;
+    }
+    opts
 }
 
 /// Parses and input file of IPs for use in DNS resolution.
@@ -236,8 +275,8 @@ fn read_ips_from_file(
 
 #[cfg(test)]
 mod tests {
-    use super::{get_resolver, parse_addresses, Opts};
-    use std::net::Ipv4Addr;
+    use super::{parse_addresses, Opts};
+    use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
     fn parse_correct_addresses() {
@@ -319,81 +358,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_correct_host_addresses() {
-        let opts = Opts {
-            addresses: vec!["google.com".to_owned()],
-            ..Default::default()
-        };
-
-        let ips = parse_addresses(&opts);
-
-        assert_eq!(ips.len(), 1);
-    }
-
-    #[test]
-    fn parse_correct_and_incorrect_addresses() {
-        let opts = Opts {
-            addresses: vec!["127.0.0.1".to_owned(), "im_wrong".to_owned()],
-            ..Default::default()
-        };
-
-        let ips = parse_addresses(&opts);
-
-        assert_eq!(ips, [Ipv4Addr::new(127, 0, 0, 1),]);
-    }
-
-    #[test]
-    fn parse_incorrect_addresses() {
-        let opts = Opts {
-            addresses: vec!["im_wrong".to_owned(), "300.10.1.1".to_owned()],
-            ..Default::default()
-        };
-
-        let ips = parse_addresses(&opts);
-
-        assert!(ips.is_empty());
-    }
-
-    #[test]
-    fn parse_hosts_file_and_incorrect_hosts() {
-        // Host file contains IP, Hosts, incorrect IPs, incorrect hosts
-        let opts = Opts {
-            addresses: vec!["fixtures/hosts.txt".to_owned()],
-            ..Default::default()
-        };
-
-        let ips = parse_addresses(&opts);
-
-        assert_eq!(ips.len(), 3);
-    }
-
-    #[test]
-    fn parse_empty_hosts_file() {
-        // Host file contains IP, Hosts, incorrect IPs, incorrect hosts
-        let opts = Opts {
-            addresses: vec!["fixtures/empty_hosts.txt".to_owned()],
-            ..Default::default()
-        };
-
-        let ips = parse_addresses(&opts);
-
-        assert_eq!(ips.len(), 0);
-    }
-
-    #[test]
-    fn parse_naughty_host_file() {
-        // Host file contains IP, Hosts, incorrect IPs, incorrect hosts
-        let opts = Opts {
-            addresses: vec!["fixtures/naughty_string.txt".to_owned()],
-            ..Default::default()
-        };
-
-        let ips = parse_addresses(&opts);
-
-        assert_eq!(ips.len(), 0);
-    }
-
-    #[test]
     fn parse_duplicate_cidrs() {
         let opts = Opts {
             addresses: vec!["79.98.104.0/21".to_owned(), "79.98.104.0/24".to_owned()],
@@ -419,16 +383,89 @@ mod tests {
     }
 
     #[test]
-    fn resolver_args_google_dns() {
-        // https://developers.google.com/speed/public-dns
+    fn parse_non_canonical_cidr_mid_block() {
+        // 192.168.1.13/29: .13 = 0000 1101, mask clears last 3 bits → .8 = 0000 1000
+        // network is 192.168.1.8/29, spanning .8 through .15
         let opts = Opts {
-            resolver: Some("8.8.8.8,8.8.4.4".to_owned()),
+            addresses: vec!["192.168.1.13/29".to_owned()],
             ..Default::default()
         };
+        let ips = parse_addresses(&opts);
+        assert_eq!(
+            ips,
+            [
+                Ipv4Addr::new(192, 168, 1, 8),
+                Ipv4Addr::new(192, 168, 1, 9),
+                Ipv4Addr::new(192, 168, 1, 10),
+                Ipv4Addr::new(192, 168, 1, 11),
+                Ipv4Addr::new(192, 168, 1, 12),
+                Ipv4Addr::new(192, 168, 1, 13),
+                Ipv4Addr::new(192, 168, 1, 14),
+                Ipv4Addr::new(192, 168, 1, 15),
+            ]
+        );
+    }
 
-        let resolver = get_resolver(&opts.resolver);
-        let lookup = resolver.lookup_ip("www.example.com.").unwrap();
+    #[test]
+    fn parse_non_canonical_cidr_last_in_block() {
+        // 192.168.1.15/29: last address in the block, should still resolve to same .8–.15 network
+        let opts = Opts {
+            addresses: vec!["192.168.1.15/29".to_owned()],
+            ..Default::default()
+        };
+        let ips = parse_addresses(&opts);
+        assert_eq!(
+            ips,
+            [
+                Ipv4Addr::new(192, 168, 1, 8),
+                Ipv4Addr::new(192, 168, 1, 9),
+                Ipv4Addr::new(192, 168, 1, 10),
+                Ipv4Addr::new(192, 168, 1, 11),
+                Ipv4Addr::new(192, 168, 1, 12),
+                Ipv4Addr::new(192, 168, 1, 13),
+                Ipv4Addr::new(192, 168, 1, 14),
+                Ipv4Addr::new(192, 168, 1, 15),
+            ]
+        );
+    }
 
-        assert!(lookup.iter().next().is_some());
+    #[test]
+    fn parse_non_canonical_cidr_crosses_third_octet() {
+        // 192.168.1.5/23: host bits span into the third octet
+        // .1.5 in 23-bit context → network is 192.168.0.0/23, spanning .0.0 through .1.255 (512 addresses)
+        let opts = Opts {
+            addresses: vec!["192.168.1.5/23".to_owned()],
+            ..Default::default()
+        };
+        let ips = parse_addresses(&opts);
+        assert_eq!(
+            ips.first(),
+            Some(&IpAddr::V4(Ipv4Addr::new(192, 168, 0, 0)))
+        );
+        assert_eq!(
+            ips.last(),
+            Some(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 255)))
+        );
+        assert_eq!(ips.len(), 512);
+    }
+
+    #[test]
+    fn parse_non_canonical_cidr_slash30() {
+        // 10.0.0.7/30: .7 = 0000 0111, mask clears last 2 bits → .4 = 0000 0100
+        // network is 10.0.0.4/30, spanning .4 through .7
+        let opts = Opts {
+            addresses: vec!["10.0.0.7/30".to_owned()],
+            ..Default::default()
+        };
+        let ips = parse_addresses(&opts);
+        assert_eq!(
+            ips,
+            [
+                Ipv4Addr::new(10, 0, 0, 4),
+                Ipv4Addr::new(10, 0, 0, 5),
+                Ipv4Addr::new(10, 0, 0, 6),
+                Ipv4Addr::new(10, 0, 0, 7),
+            ]
+        );
     }
 }

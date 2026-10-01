@@ -17,18 +17,18 @@ pub enum PortStrategy {
 }
 
 impl PortStrategy {
-    pub fn pick(range: Option<PortRanges>, ports: Option<Vec<u16>>, order: ScanOrder) -> Self {
+    pub fn pick(range: &Option<PortRanges>, ports: Option<Vec<u16>>, order: ScanOrder) -> Self {
         match order {
             ScanOrder::Serial if ports.is_none() => {
-                let port_ranges = range.unwrap();
+                let port_ranges = range.as_ref().unwrap();
                 PortStrategy::Serial(SerialRange {
-                    range: port_ranges.0,
+                    range: port_ranges.0.clone(),
                 })
             }
             ScanOrder::Random if ports.is_none() => {
-                let port_ranges = range.unwrap();
+                let port_ranges = range.as_ref().unwrap();
                 PortStrategy::Random(RandomRange {
-                    range: port_ranges.0,
+                    range: port_ranges.0.clone(),
                 })
             }
             ScanOrder::Serial => PortStrategy::Manual(ports.unwrap()),
@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn serial_strategy_with_range() {
         let ranges = PortRanges(vec![(1u16, 10u16), (20u16, 30u16), (100u16, 110u16)]);
-        let strategy = PortStrategy::pick(Some(ranges.clone()), None, ScanOrder::Serial);
+        let strategy = PortStrategy::pick(&Some(ranges.clone()), None, ScanOrder::Serial);
         let result = strategy.order();
         let expected = expected_ports_from_ranges(&ranges.0);
 
@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn random_strategy_with_range() {
         let ranges = PortRanges(vec![(1u16, 10u16), (20u16, 30u16), (100u16, 110u16)]);
-        let strategy = PortStrategy::pick(Some(ranges.clone()), None, ScanOrder::Random);
+        let strategy = PortStrategy::pick(&Some(ranges.clone()), None, ScanOrder::Random);
         let mut result = strategy.order();
         let expected = expected_ports_from_ranges(&ranges.0);
 
@@ -132,14 +132,14 @@ mod tests {
 
     #[test]
     fn serial_strategy_with_ports() {
-        let strategy = PortStrategy::pick(None, Some(vec![80, 443]), ScanOrder::Serial);
+        let strategy = PortStrategy::pick(&None, Some(vec![80, 443]), ScanOrder::Serial);
         let result = strategy.order();
         assert_eq!(vec![80, 443], result);
     }
 
     #[test]
     fn random_strategy_with_ports() {
-        let strategy = PortStrategy::pick(None, Some((1..10).collect()), ScanOrder::Random);
+        let strategy = PortStrategy::pick(&None, Some((1..10).collect()), ScanOrder::Random);
         let mut result = strategy.order();
         let expected = (1..10).collect::<Vec<u16>>();
         assert_ne!(expected, result);
