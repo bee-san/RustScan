@@ -72,3 +72,12 @@ Automated tests and benchmarks must run without network traffic or external scri
 execution. Keep coverage focused on parsing, configuration, port ordering, socket
 address iteration, and timing helpers. Do not add tests that run TCP/UDP scans
 (including localhost), resolve hostnames, or launch Nmap or other scripts.
+
+Scanning behaviour and speed are measured separately, by the opt-in "Scan benchmark"
+GitHub Actions workflow (`.github/workflows/scan-benchmark.yml`). It runs for pull
+requests that touch the scanner, its runtime or its dependencies, and can be started
+by hand from the Actions tab. It builds the change and its base in release mode,
+scans listeners that it opens on 127.0.0.1 inside the runner, checks that both
+builds find the same open ports, and adds a comparison table to the job summary. Its
+script (`.github/scan-benchmark/scan_bench.py`) port-scans the loopback interface,
+so it is meant for disposable CI runners only.

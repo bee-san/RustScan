@@ -1,0 +1,198 @@
+name: Scan benchmark
+
+# Compares the scanning speed and resource use of a change with its base.
+#
+# Each run builds both versions in release mode and runs
+# .github/scan-benchmark/scan_bench.py, which scans listeners it opens on
+# 127.0.0.1 inside the runner (plus closed and, on Linux, filtered ports) and
+# reports medians over interleaved runs. Nothing outside the runner is
+# scanned. The unit tests deliberately never open sockets; this workflow is
+# where scanning behaviour and performance are measured.
+#
+# It only runs for pull requests that touch the scanner, its runtime or its
+# dependencies, or when started by hand, so it does not slow down normal CI.
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "src/scanner/**"
+      - "src/main.rs"
+      - "src/lib.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/scan-benchmark/**"
+      - ".github/workflows/scan-benchmark.yml"
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Branch, tag or commit to compare against"
+        default: "master"
+      runs:
+        description: "Interleaved runs per build and scenario"
+        default: "9"
+      extra:
+        description: "More builds to compare, as space-separated NAME=REF pairs"
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scan-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    name: Benchmark (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Ports the Linux runners drop, to measure filtered ports (timeouts).
+      # They lie above Linux's ephemeral port range (32768-60999).
+      FILTERED_PORTS: "61000-62999"
+      RUNS: ${{ inputs.runs || '9' }}
+      EXTRA: ${{ inputs.extra }}
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Check the benchmark script
+        run: python -m py_compile .github/scan-benchmark/scan_bench.py
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: stable
+          # build.rs formats the generated payload table with rustfmt.
+          components: rustfmt
+          # Caching is handled by Swatinem/rust-cache below.
+          cache: false
+          rustflags: ""
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Build the change
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          exe=""
+          if [ "$RUNNER_OS" = Windows ]; then exe=".exe"; fi
+          echo "EXE=$exe" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/bin"
+          cargo build --release --locked
+          cp "target/release/rustscan$exe" "$RUNNER_TEMP/bin/head$exe"
+          if [ -n "$PR_NUMBER" ]; then
+            label="#$PR_NUMBER at ${PR_HEAD::7}, merged into its base"
+          else
+            label="$(git log -1 --format='%h %s' HEAD)"
+          fi
+          echo "HEAD_LABEL=$label" >> "$GITHUB_ENV"
+
+      - name: Build the base and any extra builds
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          INPUT_BASE: ${{ inputs.base }}
+        run: |
+          build_ref() {
+            local name="$1" ref="$2"
+            if [[ ! "$name" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+              echo "::error::invalid build name '$name'"
+              exit 1
+            fi
+            git fetch --no-tags --depth=1 origin "$ref"
+            git worktree add --detach "$RUNNER_TEMP/src-$name" FETCH_HEAD
+            cargo build --release --locked \
+              --manifest-path "$RUNNER_TEMP/src-$name/Cargo.toml" --target-dir target
+            cp "target/release/rustscan$EXE" "$RUNNER_TEMP/bin/$name$EXE"
+            echo "$name=$(git log -1 --format='%h %s' FETCH_HEAD)" >> "$RUNNER_TEMP/labels"
+          }
+
+          if [ "$EVENT" = pull_request ]; then base="$PR_BASE"; else base="${INPUT_BASE:-master}"; fi
+          build_ref base "$base"
+          for spec in $EXTRA; do
+            build_ref "${spec%%=*}" "${spec#*=}"
+          done
+          cat "$RUNNER_TEMP/labels"
+
+      - name: Drop traffic to the filtered ports
+        if: runner.os == 'Linux'
+        run: |
+          if ! command -v iptables >/dev/null; then
+            echo "::warning::iptables is not available; skipping the filtered-port scenarios"
+            exit 0
+          fi
+          for proto in tcp udp; do
+            sudo iptables -I INPUT -i lo -p "$proto" --dport "${FILTERED_PORTS/-/:}" -j DROP
+          done
+          sudo iptables -S INPUT
+          echo "FILTERED_OK=1" >> "$GITHUB_ENV"
+
+      - name: Describe the runner
+        run: |
+          uname -a
+          if [ "$RUNNER_OS" = Linux ]; then
+            nproc
+            grep -m1 'model name' /proc/cpuinfo || true
+            sysctl net.ipv4.ip_local_port_range net.ipv4.tcp_tw_reuse net.core.somaxconn
+            ss -Hltnu | sort -k5 | head -n 50
+          elif [ "$RUNNER_OS" = macOS ]; then
+            sysctl hw.ncpu machdep.cpu.brand_string kern.maxfilesperproc \
+              net.inet.ip.portrange.first net.inet.ip.portrange.last net.inet.icmp.icmplim
+          fi
+
+      - name: Run the benchmark
+        run: |
+          # Allow the largest batch size without RustScan shrinking it to fit
+          # the descriptor limit (macOS defaults to 256).
+          if [ "$RUNNER_OS" != Windows ]; then
+            for limit in 65536 24576 12288; do
+              ulimit -n "$limit" 2>/dev/null && break
+            done
+            echo "open-file limit: $(ulimit -n)"
+          fi
+
+          # Fail on wrong results, or if the change is clearly slower or
+          # bigger than its base (see --max-slowdown/--max-memory).
+          args=(--runs "$RUNS" --gate head --json bench-results.json --markdown bench-results.md)
+          if [ -n "${FILTERED_OK:-}" ]; then args+=(--filtered "$FILTERED_PORTS"); fi
+          args+=(--build "base=$RUNNER_TEMP/bin/base$EXE")
+          args+=(--build "head=$RUNNER_TEMP/bin/head$EXE" --label "head=$HEAD_LABEL")
+          while IFS= read -r line; do
+            name="${line%%=*}"
+            args+=(--label "$line")
+            if [ "$name" != base ]; then
+              args+=(--build "$name=$RUNNER_TEMP/bin/$name$EXE")
+            fi
+          done < "$RUNNER_TEMP/labels"
+
+          python .github/scan-benchmark/scan_bench.py run "${args[@]}"
+
+      - name: Publish the summary
+        if: always()
+        run: |
+          if [ -f bench-results.md ]; then cat bench-results.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: scan-benchmark-${{ matrix.os }}
+          path: |
+            bench-results.json
+            bench-results.md
+          if-no-files-found: ignore
