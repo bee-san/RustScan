@@ -86,5 +86,7 @@ Each benchmark completes 4,096 simulated operations through a 256-operation
 window. One case completes immediately; the other expires every operation after
 10 ms. Runtime construction is outside the measurement. Criterion uses 20
 samples, a one-second warmup and a five-second measurement target. These measure
-scheduling and timer costs; real TCP/UDP scan throughput still needs a manual
-comparison in a controlled environment before release.
+scheduling and timer costs. The [real TCP/UDP scan comparison](tokio-benchmark.md)
+records a separate measurement in an isolated loopback environment, including
+full CLI timings and the regression for short port intervals. LAN/WAN performance
+and network performance on other operating systems remain unmeasured.
