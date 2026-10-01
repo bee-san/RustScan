@@ -18,10 +18,6 @@ script:
 - cargo build
 - cargo test
 - cargo fmt -- --check
-after_failure:
-- wget https://raw.githubusercontent.com/DiscordHooks/travis-ci-discord-webhook/master/send.sh
-- chmod +x send.sh
-- "./send.sh failure $WEBHOOK_URL"
 after_success: |
   if [ -n "${GITHUB_TOKEN}" ]; then
     [ "${TRAVIS_BRANCH} " = master ] &&

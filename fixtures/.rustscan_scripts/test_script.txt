@@ -1,9 +1,7 @@
-#!intentional_blank_line
+Metadata-only test fixture; not executable.
 #tags = ["core_approved", "example"]
 #developer = [ "example", "https://example.org" ]
 #ports_separator = ","
-#call_format = "nmap -vvv -p {{port}} {{ip}}"
+#call_format = "fixture {{ip}} {{port}}"
 
-# The Scriptfile parser stops parsing at the first blank line.
-# This script will run the system installed nmap, ports will be concatenated with "," .
-# Unused field: trigger_port = "80"
+The parser reads only the metadata above. This file contains no script body.

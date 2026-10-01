@@ -46,12 +46,9 @@
 //!
 //! - `fixtures/test_rustscan_scripts.toml`
 //!
-//! Script file examples:
+//! Metadata-only test fixture:
 //!
-//! - `fixtures/test_script.py`
-//! - `fixtures/test_script.pl`
-//! - `fixtures/test_script.sh`
-//! - `fixtures/test_script.txt`
+//! - `fixtures/.rustscan_scripts/test_script.txt`
 //!
 //! `call_format` in script files can be of 2 variants:
 //!
@@ -410,7 +407,7 @@ mod tests {
     fn find_and_parse_scripts() {
         let scripts = find_scripts("fixtures/.rustscan_scripts".into()).unwrap();
         let scripts = parse_scripts(scripts);
-        assert_eq!(scripts.len(), 4);
+        assert_eq!(scripts.len(), 1);
     }
 
     #[test]
@@ -450,7 +447,7 @@ mod tests {
         assert_eq!(script_f.ports_separator, Some(",".to_string()));
         assert_eq!(
             script_f.call_format,
-            Some("nmap -vvv -p {{port}} {{ip}}".to_string())
+            Some("fixture {{ip}} {{port}}".to_string())
         );
     }
 

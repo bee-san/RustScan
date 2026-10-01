@@ -1,7 +1,7 @@
-#!intentional_blank_line
+Metadata-only test fixture; not executable.
 #tags = "core_approved"
 #developer = [ "example", "https://example.org" ]
 #ports_separator = ","
-#call_format = "nmap -vvv -p {{port}} {{ip}}"
+#call_format = "fixture {{ip}} {{port}}"
 
 # tags has to be an array, thus this file won't be parsed
