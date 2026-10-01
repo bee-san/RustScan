@@ -15,7 +15,8 @@ runtime. Script execution runs after the runtime has been dropped. Port ordering
 exclusions, retries, UDP payloads, closed-port reporting and CLI options retain
 their existing implementations.
 
-Timeouts and port intervals use the runtime-independent `futures-timer` crate.
+Timeouts and port intervals retain `async_io::Timer`, the timer underneath
+async-std, independently of the Tokio socket runtime.
 An expired timer maps to `std::io::ErrorKind::TimedOut`. Socket errors retain
 their original kind, so TCP refusal reporting and UDP timeout retries continue
 to distinguish replies from failures. Successful TCP streams are converted to
@@ -23,8 +24,8 @@ standard streams, shut down in both directions, and dropped before another
 attempt is polled.
 
 Using Tokio's timers for short waits added approximately one millisecond per
-interval in the first benchmark. `futures-timer` uses a shared helper thread and
-OS waits, avoiding that extra rounding while keeping the async runtime responsive.
+interval in the first benchmark. Retaining the existing timer avoids that extra
+rounding while keeping the async runtime responsive.
 Dropping a scan cancels its timers; runtime shutdown never has to wait for a
 sleeping blocking task. Immediately ready I/O operations avoid timer allocation,
 and the time spent polling a pending operation is charged to its original timeout.
@@ -71,10 +72,10 @@ owns its own runtime and performs blocking lookups.
 The direct Tokio dependency enables only `rt`, `net`, and `time`; `test-util` is
 enabled for deterministic tests with a paused clock. Tokio was already present
 through Hickory. The existing `futures` dependency continues to provide
-`FuturesUnordered`, `StreamExt` and future polling. The new `futures-timer` 3.0.4
-dependency has no transitive dependencies on native targets; its purpose is to
-preserve short timeout and interval performance. `async-std` is absent from the
-resolved dependency tree.
+`FuturesUnordered`, `StreamExt` and future polling. `async-io` becomes a direct
+dependency solely to retain the existing timer implementation and its short-wait
+performance; socket I/O uses Tokio. `async-std` and its executor are absent from
+the resolved dependency tree.
 
 Regression tests cover successful operations (including zero-byte responses),
 preservation of I/O errors, timeout cancellation, immediate results at a zero

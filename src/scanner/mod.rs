@@ -165,7 +165,10 @@ impl Scanner {
         // Tokio's millisecond rounding adds about 1 ms to each short interval.
         // This cancellable delay keeps the requested spacing without blocking
         // the async runtime or accumulating that rounding on every port.
-        self.run_with_delay(futures_timer::Delay::new).await
+        self.run_with_delay(|interval| async move {
+            async_io::Timer::after(interval).await;
+        })
+        .await
     }
 
     /// Supplying the delay lets tests verify spacing with a virtual clock.

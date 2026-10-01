@@ -20,7 +20,7 @@ pub(super) async fn io_timeout<T>(
 
     // Charge socket setup to the original deadline. The timer uses OS waits
     // without rounding each short timeout up to Tokio's next millisecond tick.
-    let delay = futures_timer::Delay::new(duration.saturating_sub(started.elapsed()));
+    let delay = async_io::Timer::after(duration.saturating_sub(started.elapsed()));
     match select(operation, delay).await {
         Either::Left((result, _)) => result,
         Either::Right(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "future timed out")),

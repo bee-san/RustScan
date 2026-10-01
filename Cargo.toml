@@ -21,7 +21,7 @@ clap = { version = "4.6.1", features = ["derive", "wrap_help"] }
 colored = "3.1.1"
 tokio = { version = "1.53.1", features = ["rt", "net", "time"] }
 futures = "0.3"
-futures-timer = "3.0.4"
+async-io = "2.4.0"
 rlimit = "0.11.0"
 log = "0.4.32"
 env_logger = "0.11.10"
