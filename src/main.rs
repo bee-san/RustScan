@@ -319,9 +319,11 @@ fn infer_batch_size(opts: &Opts, ulimit: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use super::effective_batch_size;
     #[cfg(unix)]
     use super::{adjust_ulimit_size, infer_batch_size};
-    use super::{effective_batch_size, print_opening, Opts};
+    use super::{print_opening, Opts};
 
     #[test]
     #[cfg(unix)]
