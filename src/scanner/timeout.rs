@@ -27,18 +27,18 @@ pub(super) async fn io_timeout<T>(
     // second reactor. Leave 32 ms for the precise timer to allow for coarse
     // timer rounding (including Windows). Short timeouts use the
     // precise timer immediately; neither phase changes the original deadline.
-    const PRECISE_WINDOW: Duration = Duration::from_millis(32);
-    if deadline.saturating_duration_since(Instant::now()) > PRECISE_WINDOW {
-        let delay =
-            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline - PRECISE_WINDOW));
-        futures::pin_mut!(delay);
-        if let Either::Left((result, _)) = select(operation.as_mut(), delay).await {
-            return result;
+    // Allocate this state only for pending I/O. Keeping it out of the outer
+    // future also keeps FuturesUnordered entries small for immediate results.
+    let delay = Box::pin(async move {
+        const PRECISE_WINDOW: Duration = Duration::from_millis(32);
+        if deadline.saturating_duration_since(Instant::now()) > PRECISE_WINDOW {
+            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline - PRECISE_WINDOW))
+                .await;
         }
-    }
 
-    // OS waits avoid rounding every short timeout to the next millisecond.
-    let delay = async_io::Timer::at(deadline);
+        // OS waits avoid rounding every short timeout to the next millisecond.
+        async_io::Timer::at(deadline).await;
+    });
     match select(operation, delay).await {
         Either::Left((result, _)) => result,
         Either::Right(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "future timed out")),
