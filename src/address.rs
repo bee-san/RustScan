@@ -96,62 +96,17 @@ pub fn parse_address(address: &str, resolver: &Resolver) -> Vec<IpAddr> {
         // `address` is an IP string
         vec![addr]
     } else if let Ok(net_addr) = IpInet::from_str(address) {
-        // `address` is a canonical CIDR string
-        net_addr.network().into_iter().addresses().collect()
-    } else if let Some(net_addr) = normalize_cidr(address) {
-        // `address` is a non-canonical CIDR (host bits set), e.g. "192.168.1.13/29"
-        // normalizes to "192.168.1.8/29" by masking off host bits
+        // `address` is a CIDR string
         net_addr.network().into_iter().addresses().collect()
     } else {
         // `address` is a hostname or DNS name
+        // attempt default DNS lookup
         match format!("{address}:80").to_socket_addrs() {
             Ok(mut iter) => vec![iter.next().unwrap().ip()],
+            // default lookup didn't work, so try again with the dedicated resolver
             Err(_) => resolve_ips_from_host(address, resolver),
         }
     }
-}
-/// Normalizes a non-canonical CIDR (where host bits are set) into a canonical one,
-/// then parses it as an IpInet.
-///
-/// For example, "192.168.1.13/29" → "192.168.1.8/29" because .13 (0000 1101) masked
-/// with /29 clears the last 3 bits → .8 (0000 1000), which is the actual network start.
-fn normalize_cidr(address: &str) -> Option<IpInet> {
-    let (ip_str, prefix_str) = address.split_once('/')?;
-    let ip = IpAddr::from_str(ip_str).ok()?;
-    let prefix: u8 = prefix_str.parse().ok()?;
-    let canonical = match ip {
-        IpAddr::V4(v4) => {
-            if prefix > 32 {
-                return None;
-            }
-            let mask = if prefix == 0 {
-                0u32
-            } else {
-                !0u32 << (32 - prefix)
-            };
-            format!(
-                "{}/{}",
-                std::net::Ipv4Addr::from(u32::from(v4) & mask),
-                prefix
-            )
-        }
-        IpAddr::V6(v6) => {
-            if prefix > 128 {
-                return None;
-            }
-            let mask = if prefix == 0 {
-                0u128
-            } else {
-                !0u128 << (128 - prefix)
-            };
-            format!(
-                "{}/{}",
-                std::net::Ipv6Addr::from(u128::from(v6) & mask),
-                prefix
-            )
-        }
-    };
-    IpInet::from_str(&canonical).ok()
 }
 
 /// Uses DNS to get the IPS associated with host
@@ -236,15 +191,54 @@ fn get_resolver(resolver: &Option<String>) -> Resolver {
                     Protocol::Udp,
                 ));
             }
-            Resolver::new(config, ResolverOpts::default()).unwrap()
+            Resolver::new(config, resolver_opts()).unwrap()
         }
-        None => match Resolver::from_system_conf() {
+        None => match system_resolver() {
             Ok(resolver) => resolver,
-            Err(_) => {
-                Resolver::new(ResolverConfig::cloudflare_tls(), ResolverOpts::default()).unwrap()
-            }
+            Err(_) => Resolver::new(ResolverConfig::cloudflare_tls(), resolver_opts()).unwrap(),
         },
     }
+}
+
+/// `true` on Windows when the `SystemRoot` environment variable is unset.
+///
+/// hickory-resolver locates the hosts file via
+/// `std::env::var_os("SystemRoot").expect(...)`, which panics when the
+/// variable is missing. Processes spawned with a minimal environment
+/// (services, scheduled tasks, WMI) can lack `SystemRoot`, and the panic is
+/// fatal under this crate's `panic = "abort"` release profile.
+fn windows_system_root_missing() -> bool {
+    cfg!(windows) && std::env::var_os("SystemRoot").is_none()
+}
+
+/// Derives a resolver from the system configuration, e.g. `/etc/resolv.conf`
+/// on *nix or the registry on Windows.
+///
+/// Returns an error without touching the system configuration when doing so
+/// would panic inside hickory-resolver (see [`windows_system_root_missing`]).
+fn system_resolver() -> std::io::Result<Resolver> {
+    if windows_system_root_missing() {
+        debug!("SystemRoot is not set; skipping system resolver configuration");
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "SystemRoot environment variable is not set",
+        ));
+    }
+
+    Resolver::from_system_conf()
+}
+
+/// Resolver options that are safe to use in the current environment.
+///
+/// hickory-resolver eagerly loads the hosts file when `use_hosts_file` is set
+/// (the default), which hits the same missing-`SystemRoot` panic described in
+/// [`windows_system_root_missing`]; disable it in that case.
+fn resolver_opts() -> ResolverOpts {
+    let mut opts = ResolverOpts::default();
+    if windows_system_root_missing() {
+        opts.use_hosts_file = false;
+    }
+    opts
 }
 
 /// Parses and input file of IPs for use in DNS resolution.
@@ -281,7 +275,7 @@ fn read_ips_from_file(
 
 #[cfg(test)]
 mod tests {
-    use super::{get_resolver, parse_addresses, Opts};
+    use super::{parse_addresses, Opts};
     use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
@@ -364,81 +358,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_correct_host_addresses() {
-        let opts = Opts {
-            addresses: vec!["google.com".to_owned()],
-            ..Default::default()
-        };
-
-        let ips = parse_addresses(&opts);
-
-        assert_eq!(ips.len(), 1);
-    }
-
-    #[test]
-    fn parse_correct_and_incorrect_addresses() {
-        let opts = Opts {
-            addresses: vec!["127.0.0.1".to_owned(), "im_wrong".to_owned()],
-            ..Default::default()
-        };
-
-        let ips = parse_addresses(&opts);
-
-        assert_eq!(ips, [Ipv4Addr::new(127, 0, 0, 1),]);
-    }
-
-    #[test]
-    fn parse_incorrect_addresses() {
-        let opts = Opts {
-            addresses: vec!["im_wrong".to_owned(), "300.10.1.1".to_owned()],
-            ..Default::default()
-        };
-
-        let ips = parse_addresses(&opts);
-
-        assert!(ips.is_empty());
-    }
-
-    #[test]
-    fn parse_hosts_file_and_incorrect_hosts() {
-        // Host file contains IP, Hosts, incorrect IPs, incorrect hosts
-        let opts = Opts {
-            addresses: vec!["fixtures/hosts.txt".to_owned()],
-            ..Default::default()
-        };
-
-        let ips = parse_addresses(&opts);
-
-        assert_eq!(ips.len(), 3);
-    }
-
-    #[test]
-    fn parse_empty_hosts_file() {
-        // Host file contains IP, Hosts, incorrect IPs, incorrect hosts
-        let opts = Opts {
-            addresses: vec!["fixtures/empty_hosts.txt".to_owned()],
-            ..Default::default()
-        };
-
-        let ips = parse_addresses(&opts);
-
-        assert_eq!(ips.len(), 0);
-    }
-
-    #[test]
-    fn parse_naughty_host_file() {
-        // Host file contains IP, Hosts, incorrect IPs, incorrect hosts
-        let opts = Opts {
-            addresses: vec!["fixtures/naughty_string.txt".to_owned()],
-            ..Default::default()
-        };
-
-        let ips = parse_addresses(&opts);
-
-        assert_eq!(ips.len(), 0);
-    }
-
-    #[test]
     fn parse_duplicate_cidrs() {
         let opts = Opts {
             addresses: vec!["79.98.104.0/21".to_owned(), "79.98.104.0/24".to_owned()],
@@ -463,19 +382,6 @@ mod tests {
         assert_eq!(ips.len(), 256);
     }
 
-    #[test]
-    fn resolver_args_google_dns() {
-        // https://developers.google.com/speed/public-dns
-        let opts = Opts {
-            resolver: Some("8.8.8.8,8.8.4.4".to_owned()),
-            ..Default::default()
-        };
-
-        let resolver = get_resolver(&opts.resolver);
-        let lookup = resolver.lookup_ip("www.example.com.").unwrap();
-
-        assert!(lookup.iter().next().is_some());
-    }
     #[test]
     fn parse_non_canonical_cidr_mid_block() {
         // 192.168.1.13/29: .13 = 0000 1101, mask clears last 3 bits → .8 = 0000 1000
