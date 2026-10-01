@@ -15,7 +15,9 @@ jobs:
     name: Test Suite
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # ubuntu-24.04-arm is the GitHub-hosted arm64 Linux runner;
+        # macos-latest already runs on Apple Silicon (arm64).
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
         rust: [stable]
     runs-on: ${{ matrix.os }}
 

@@ -1,90 +1,38 @@
 # ARM support
 
-This document explains how RustScan's ARM support works, how to build ARM binaries locally, and how the CI pipeline validates ARM builds and tests.
+This page covers which ARM targets RustScan's CI builds and tests, and how to build ARM binaries yourself.
 
-## What ARM targets are supported
+## What CI covers
 
-The CI pipeline builds and tests Linux ARM64 using the target:
+| Target | Built by | Tested by |
+| --- | --- | --- |
+| `aarch64-unknown-linux-gnu` (64-bit ARM Linux) | `build-nix` job in [build.yml](../.github/workflows/build.yml) | `Test Suite (ubuntu-24.04-arm)` in [test.yml](../.github/workflows/test.yml) |
+| `armv7-unknown-linux-gnueabihf` (32-bit ARM Linux) | `build-nix` job in [build.yml](../.github/workflows/build.yml) | not tested in CI |
+| `aarch64-apple-darwin` (Apple Silicon macOS) | `build-macos-aarch64` job in [build.yml](../.github/workflows/build.yml) | `Test Suite (macos-latest)` in [test.yml](../.github/workflows/test.yml) |
 
-- `aarch64-unknown-linux-gnu`
+- **Builds** use [`houseabsolute/actions-rust-cross`](https://github.com/houseabsolute/actions-rust-cross). It cross-compiles the Linux ARM targets with [`cross`](https://github.com/cross-rs/cross) on x86_64 runners.
+- **Tests** run natively on GitHub-hosted arm64 runners: `ubuntu-24.04-arm` for Linux, and `macos-latest`, which runs on Apple Silicon. They run the same `just test` recipe as every other platform.
 
-The build pipeline also produces additional Linux artifacts for other targets, but ARM validation focuses on aarch64 Linux.
+## Building ARM binaries locally
 
-## CI overview (GitHub Actions)
+The simplest option is `cross`, which runs the build in a container that already has the right toolchain and linker. It needs Docker or Podman.
 
-ARM support is provided via GitHub Actions using `actions/setup-rust` plus `cross` for cross-compilation. The pipeline includes:
-
-- A build matrix that includes `aarch64-unknown-linux-gnu` for Linux builds.
-- A dedicated ARM test job that runs `cross test` for the aarch64 target.
-- Explicit Python installation and dependency setup for the scripting integration tests.
-
-Key files:
-
-- CI workflows: [.github/workflows/build.yml](../.github/workflows/build.yml) and [.github/workflows/test.yml](../.github/workflows/test.yml)
-- Cross configuration: [Cross.toml](../Cross.toml)
-
-### Why `cross`
-
-`cross` runs builds and tests inside a container that has the right toolchain for the target. This avoids local toolchain setup and makes the aarch64 Linux build reproducible in CI.
-
-### Python dependencies in ARM CI
-
-RustScan’s scripting tests execute a Python script from the fixtures directory, so Python must exist in the test environment. For ARM CI, Python is installed in the cross container using the `pre-build` hooks in [Cross.toml](../Cross.toml).
-
-## Local builds for ARM
-
-You can build ARM binaries locally using `cross` on any host OS that supports Docker/Podman.
-
-### 1) Install cross
-
-```
+```sh
 cargo install cross
-```
-
-### 2) Build for aarch64 Linux
-
-```
 cross build --locked --release --target aarch64-unknown-linux-gnu
+# or, for 32-bit ARM:
+cross build --locked --release --target armv7-unknown-linux-gnueabihf
 ```
 
-The resulting binary is located at:
+The binary ends up at `target/<target>/release/rustscan`.
 
+On an ARM machine (for example a Raspberry Pi running a 64-bit OS, or an Apple Silicon Mac) you don't need `cross`; a normal native build works:
+
+```sh
+cargo build --locked --release
 ```
-target/aarch64-unknown-linux-gnu/release/rustscan
-```
-
-## Local tests for ARM
-
-Run the test suite for the ARM target with:
-
-```
-cross test --target aarch64-unknown-linux-gnu
-```
-
-This runs the Rust unit and integration tests inside the aarch64 container. The Python script-based test is included and relies on the Python setup defined in [Cross.toml](../Cross.toml).
-
-## Customizing the ARM container
-
-If you need additional tools in the ARM container (for example, extra Python packages), update the `pre-build` list in [Cross.toml](../Cross.toml). The current configuration installs Python and basic packaging tools.
 
 ## Troubleshooting
 
-### Python script test failures
-
-If the `run_python_script` test fails, verify that the container has Python installed and that the script shebang is executable. In CI, this is handled by the `pre-build` steps in [Cross.toml](../Cross.toml). For local use, ensure your Docker/Podman backend is functioning and that `cross` can download the base image.
-
-### Missing target errors
-
-If you see target-related errors, ensure `cross` is installed and you are using the correct target triple:
-
-- `aarch64-unknown-linux-gnu`
-
-## FAQ
-
-**Does this add native ARM runners?**
-
-No. The ARM jobs run on standard GitHub-hosted runners and use `cross` to build and test aarch64 Linux in containers.
-
-**Can I build ARM binaries without cross?**
-
-Yes, but you’ll need to install a compatible target toolchain and linker locally. `cross` is the recommended approach because it’s consistent with CI.
+- **`error[E0463]: can't find crate for std`, or linker errors:** you're cross-compiling with plain `cargo`. Either use `cross`, or install the target (`rustup target add <target>`) along with a matching cross linker.
+- **`cross` can't pull its image:** check that Docker or Podman is running and that your user can reach it.
