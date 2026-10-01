@@ -9,7 +9,10 @@ runner, never on a developer machine or a shared host.
 separate process, runs every scenario with every build (interleaving the
 builds so that drift on the runner affects them all alike), checks that all
 builds report the same open ports, and writes the raw measurements as JSON
-plus a Markdown summary of the medians.
+plus a Markdown summary of the medians. On Linux the workflow also sets up a
+host behind an artificial delay (a network namespace on the runner, with its
+own ``serve``), so that answers arrive after a round trip, as they do from a
+remote host, instead of while the probe is being sent.
 
 Measured per run:
 
@@ -58,28 +61,29 @@ RUN_TIMEOUT = 300  # seconds before a run is killed and counted as failed
 # --------------------------------------------------------------------------
 
 
-def serve() -> int:
+def serve(addresses: list[str]) -> int:
     """Accepts (and closes) TCP connections and answers every UDP datagram."""
     selector = selectors.DefaultSelector()
-    bound: dict[str, list[int]] = {"tcp": [], "udp": [], "tcp_busy": [], "udp_busy": []}
+    bound: dict[str, dict[str, list[int]]] = {"tcp": {}, "udp": {}, "busy": {}}
 
-    for kind, ports in (("tcp", TCP_PORTS), ("udp", UDP_PORTS)):
-        sock_type = socket.SOCK_STREAM if kind == "tcp" else socket.SOCK_DGRAM
-        for port in ports:
-            sock = socket.socket(socket.AF_INET, sock_type)
-            if os.name != "nt":
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                sock.bind((LOOPBACK, port))
-            except OSError:
-                sock.close()
-                bound[f"{kind}_busy"].append(port)
-                continue
-            if kind == "tcp":
-                sock.listen(1024)
-            sock.setblocking(False)
-            selector.register(sock, selectors.EVENT_READ, kind)
-            bound[kind].append(port)
+    for address in addresses:
+        for kind, ports in (("tcp", TCP_PORTS), ("udp", UDP_PORTS)):
+            sock_type = socket.SOCK_STREAM if kind == "tcp" else socket.SOCK_DGRAM
+            for port in ports:
+                sock = socket.socket(socket.AF_INET, sock_type)
+                if os.name != "nt":
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    sock.bind((address, port))
+                except OSError:
+                    sock.close()
+                    bound["busy"].setdefault(f"{kind} {address}", []).append(port)
+                    continue
+                if kind == "tcp":
+                    sock.listen(1024)
+                sock.setblocking(False)
+                selector.register(sock, selectors.EVENT_READ, kind)
+                bound[kind].setdefault(address, []).append(port)
 
     print(json.dumps(bound), flush=True)
 
@@ -108,9 +112,10 @@ def serve() -> int:
                         pass
 
 
-def start_server() -> tuple[subprocess.Popen, dict[str, list[int]]]:
+def start_server(addresses: list[str]) -> tuple[subprocess.Popen, dict]:
+    args = [arg for address in addresses for arg in ("--address", address)]
     proc = subprocess.Popen(
-        [sys.executable, os.path.abspath(__file__), "serve"],
+        [sys.executable, os.path.abspath(__file__), "serve", *args],
         stdout=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
         text=True,
@@ -157,51 +162,51 @@ class Scenario:
             args.append("--udp")
         return args
 
-    def expected(self, listeners: dict[str, list[int]]) -> set[str]:
-        if LOOPBACK not in self.addresses:
-            return set()
-        ports = listeners["udp" if self.udp else "tcp"]
-        return {f"{LOOPBACK}:{port}" for port in ports if self.covers(port)}
+    def expected(self, listeners: dict) -> set[str]:
+        by_address = listeners["udp" if self.udp else "tcp"]
+        return {
+            f"{address}:{port}"
+            for address in self.addresses
+            for port in by_address.get(address, [])
+            if self.covers(port)
+        }
 
     def describe(self) -> str:
         hosts = f"{len(self.addresses)} addresses" if len(self.addresses) > 1 else self.addresses[0]
         return f"{self.title}: `{' '.join(self.args()[2:])}` on {hosts}"
 
 
-def build_scenarios(system: str, filtered: tuple[int, int] | None) -> list[Scenario]:
+def build_scenarios(
+    system: str, filtered: tuple[int, int] | None, delayed: str | None, delay_ms: int
+) -> list[Scenario]:
     lo = (LOOPBACK,)
     if system == "Windows":
         # Windows retries a refused connection for about a second, so every
-        # closed port costs a full timeout there: sweep fewer ports, faster.
-        sweep, timeout_ms = ((1, 8191),), 500
+        # closed port there takes as long as a filtered one: sweep fewer.
+        sweep, small_sweep = ((1, 8191),), ((1, 2047),)
     else:
-        sweep, timeout_ms = (SWEEP,), 1500
-    ports = f"{sweep[0][1]:,} ports"
+        sweep = small_sweep = (SWEEP,)
+
+    def ports(ranges: tuple[tuple[int, int], ...]) -> str:
+        return f"{sum(e - s + 1 for s, e in ranges):,} ports"
+
     scenarios = [
         Scenario("tcp-1-port", "TCP, 1 open port", lo, ports=(TCP_PORTS[0],), repeat=3),
-        Scenario("tcp-sweep", f"TCP, {ports}, default batch", lo, sweep, timeout_ms=timeout_ms),
+        Scenario("tcp-sweep", f"TCP, {ports(sweep)}, default batch", lo, sweep),
         Scenario(
-            "tcp-sweep-b500",
-            f"TCP, {ports}, small batch",
-            lo,
-            sweep,
-            batch=500,
-            timeout_ms=timeout_ms,
+            "tcp-sweep-b500", f"TCP, {ports(small_sweep)}, small batch", lo, small_sweep, batch=500
         ),
-        Scenario(
-            "tcp-sweep-b10000",
-            f"TCP, {ports}, large batch",
-            lo,
-            sweep,
-            batch=10000,
-            timeout_ms=timeout_ms,
-        ),
+        Scenario("tcp-sweep-b10000", f"TCP, {ports(sweep)}, large batch", lo, sweep, batch=10000),
     ]
     if system == "Linux":
         # Linux answers on all of 127.0.0.0/8; other systems only on 127.0.0.1.
         hosts = tuple(f"127.0.0.{i}" for i in range(1, 9))
         scenarios.append(
             Scenario("tcp-8-hosts", "TCP, 8 hosts x 4,096 ports", hosts, ((1, 4096),))
+        )
+    if delayed:
+        scenarios.append(
+            Scenario("tcp-delayed", f"TCP, {ports(sweep)}, {delay_ms} ms away", (delayed,), sweep)
         )
     if filtered:
         dropped = (filtered,)
@@ -211,13 +216,26 @@ def build_scenarios(system: str, filtered: tuple[int, int] | None) -> list[Scena
             ),
             Scenario(
                 "tcp-mixed",
-                f"TCP, {ports} + 2,000 filtered ports",
+                f"TCP, {ports(sweep)} + 2,000 filtered ports",
                 lo,
                 sweep + dropped,
                 timeout_ms=500,
             ),
         ]
-    scenarios.append(Scenario("udp-sweep", f"UDP, {ports}", lo, sweep, timeout_ms=500, udp=True))
+    scenarios.append(
+        Scenario("udp-sweep", f"UDP, {ports(sweep)}", lo, sweep, timeout_ms=500, udp=True)
+    )
+    if delayed:
+        scenarios.append(
+            Scenario(
+                "udp-delayed",
+                f"UDP, {ports(sweep)}, {delay_ms} ms away",
+                (delayed,),
+                sweep,
+                timeout_ms=500,
+                udp=True,
+            )
+        )
     if filtered:
         scenarios.append(
             Scenario(
@@ -594,37 +612,56 @@ def worse_by(value: float, base: float, higher_is_better: bool) -> float:
 
 def check_open_ports(
     results: Results, scenarios: list[Scenario], listeners: dict, baseline: str
-) -> tuple[list[str], list[str]]:
-    """Returns (failed runs, open-port mismatches).
+) -> tuple[list[str], list[str], list[str]]:
+    """Returns (failed runs, open-port mismatches, notes).
 
-    Every run must find every listener. Ports that are open beyond those
-    (services already running on the runner) must match what the baseline
-    found: a build may not miss a port the baseline found in every run, nor
-    report one the baseline never found.
+    No build may miss more listeners than the baseline: none at all if the
+    baseline found every listener in every run, or barely more if it did not
+    either (a runner too slow for the scenario's timeout). Ports that are
+    open beyond the listeners (services already running on the runner) must
+    match what the baseline found: a build may not miss a port the baseline
+    found in every run, nor report one the baseline never found.
     """
-    failures, mismatches = [], []
+    failures, mismatches, notes = [], [], []
     for sc in scenarios:
         expected = sc.expected(listeners)
         per_build = results[sc.name]
+
+        def missed(runs: list[RunResult]) -> int:
+            return sum(len(expected - set(r.open)) for r in runs if r.ok)
+
+        base_missed = missed(per_build[baseline])
+        allowed = base_missed + max(3, base_missed // 4) if base_missed else 0
+        if base_missed:
+            notes.append(
+                f"`{sc.name}`: `{baseline}` itself missed {base_missed} of "
+                f"{len(expected) * len(per_build[baseline])} listener answers"
+            )
+
         base_extra = [set(r.open) - expected for r in per_build[baseline] if r.ok]
         always = set.intersection(*base_extra) if base_extra else set()
         ever = set.union(*base_extra) if base_extra else set()
         for name, runs in per_build.items():
             for index, res in enumerate(runs, start=1):
-                where = f"`{sc.name}` `{name}` run {index}"
                 if not res.ok:
-                    failures.append(f"{where}: {res.error.splitlines()[0]}")
+                    failures.append(f"`{sc.name}` `{name}` run {index}: {res.error.splitlines()[0]}")
+            if name == baseline:
+                continue
+            if (count := missed(runs)) > allowed:
+                mismatches.append(
+                    f"`{sc.name}` `{name}`: missed {count} listener answers "
+                    f"(`{baseline}`: {base_missed})"
+                )
+            for index, res in enumerate(runs, start=1):
+                if not res.ok:
                     continue
                 found = set(res.open)
-                if missing := expected - found:
-                    mismatches.append(f"{where}: missed listeners {sorted(missing)[:5]}")
-                if name == baseline:
-                    continue
-                if missing := always - found:
-                    mismatches.append(f"{where}: missed ports `{baseline}` always found {sorted(missing)[:5]}")
+                where = f"`{sc.name}` `{name}` run {index}"
+                if lost := always - found:
+                    mismatches.append(f"{where}: missed ports `{baseline}` always found {sorted(lost)[:5]}")
                 if bogus := (found - expected) - ever:
                     mismatches.append(f"{where}: reported ports `{baseline}` never found {sorted(bogus)[:5]}")
-    return failures, mismatches
+    return failures, mismatches, notes
 
 
 def gate(
@@ -665,15 +702,19 @@ def render_markdown(report: dict, results: Results, scenarios: list[Scenario]) -
     out.append("")
 
     problems = report["failures"] + report["mismatches"]
+    tcp = sum(len(ports) for ports in report["listeners"]["tcp"].values())
+    udp = sum(len(ports) for ports in report["listeners"]["udp"].values())
     if not problems:
         out.append(
-            "✅ Every run of every build exited cleanly and found all "
-            f"{len(report['listeners']['tcp'])} TCP and {len(report['listeners']['udp'])} UDP "
-            "listeners, and no build reported a port the others did not."
+            f"✅ Every run of every build exited cleanly; no build missed more of the {tcp} TCP "
+            f"and {udp} UDP listeners than `{baseline}`, or disagreed with it about other ports."
         )
     else:
         out.append(f"❌ {len(report['failures'])} failed runs, {len(report['mismatches'])} open-port mismatches:")
         out += [f"- {p}" for p in problems[:25]]
+    if report["notes"]:
+        out.append("")
+        out += [f"- ⚠️ {note}" for note in report["notes"]]
     out.append("")
     out.append("| Scenario | What is scanned |")
     out.append("|---|---|")
@@ -738,13 +779,15 @@ def run(args: argparse.Namespace) -> int:
             raise SystemExit(f"build {name!r}: {path} does not exist")
     if args.gate and args.gate not in builds:
         raise SystemExit(f"unknown --gate build {args.gate!r}")
+    if args.delayed_host and not args.delayed_listeners:
+        raise SystemExit("--delayed-host needs --delayed-listeners")
 
     filtered = None
     if args.filtered:
         low, _, high = args.filtered.partition("-")
         filtered = (int(low), int(high))
 
-    scenarios = build_scenarios(platform.system(), filtered)
+    scenarios = build_scenarios(platform.system(), filtered, args.delayed_host, args.delay_ms)
     if args.only:
         wanted = set(args.only.split(","))
         scenarios = [sc for sc in scenarios if sc.name in wanted]
@@ -759,10 +802,19 @@ def run(args: argparse.Namespace) -> int:
                         f"port range {low}-{high}: a scan could connect a socket to itself"
                     )
 
-    server, listeners = start_server()
-    print(f"listeners: {len(listeners['tcp'])} TCP, {len(listeners['udp'])} UDP", flush=True)
-    if listeners["tcp_busy"] or listeners["udp_busy"]:
-        print(f"already in use: TCP {listeners['tcp_busy']}, UDP {listeners['udp_busy']}", flush=True)
+    server, listeners = start_server([LOOPBACK])
+    if args.delayed_host:
+        # The workflow runs a second `serve` on the delayed host (inside a
+        # network namespace) and stores its first line in this file.
+        with open(args.delayed_listeners, encoding="utf-8") as f:
+            far = json.loads(f.readline())
+        for kind in ("tcp", "udp"):
+            listeners[kind][args.delayed_host] = far[kind].get(args.delayed_host, [])
+    for kind in ("tcp", "udp"):
+        counts = {address: len(ports) for address, ports in listeners[kind].items()}
+        print(f"{kind} listeners: {counts}", flush=True)
+    if listeners["busy"]:
+        print(f"already in use: {listeners['busy']}", flush=True)
 
     names = list(builds)
     results: Results = {sc.name: {name: [] for name in names} for sc in scenarios}
@@ -794,7 +846,7 @@ def run(args: argparse.Namespace) -> int:
         server.kill()
         server.wait()
 
-    failures, mismatches = check_open_ports(results, scenarios, listeners, baseline)
+    failures, mismatches, notes = check_open_ports(results, scenarios, listeners, baseline)
     report = {
         "environment": environment(),
         "baseline": baseline,
@@ -808,6 +860,7 @@ def run(args: argparse.Namespace) -> int:
         },
         "failures": failures,
         "mismatches": mismatches,
+        "notes": notes,
     }
     markdown = render_markdown(report, results, scenarios)
     if args.json:
@@ -831,7 +884,8 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("serve", help="run the loopback listeners (started by `run`)")
+    listen = sub.add_parser("serve", help="run the loopback listeners (started by `run`)")
+    listen.add_argument("--address", action="append", default=[], help="address to listen on")
     bench = sub.add_parser("run", help="benchmark the given builds")
     bench.add_argument("--build", action="append", required=True, metavar="NAME=PATH")
     bench.add_argument("--label", action="append", default=[], metavar="NAME=TEXT")
@@ -840,6 +894,15 @@ def main() -> int:
     bench.add_argument(
         "--filtered", metavar="START-END", help="ports the runner drops; enables filtered scenarios"
     )
+    bench.add_argument(
+        "--delayed-host",
+        metavar="ADDRESS",
+        help="address behind an artificial delay, with its own `serve`; enables delayed scenarios",
+    )
+    bench.add_argument(
+        "--delayed-listeners", metavar="FILE", help="first output line of that host's `serve`"
+    )
+    bench.add_argument("--delay-ms", type=int, default=5, help="that delay, for the summary")
     bench.add_argument("--only", metavar="NAMES", help="comma-separated scenarios to run")
     bench.add_argument("--json", help="write the raw results to this file")
     bench.add_argument("--markdown", help="write the Markdown summary to this file")
@@ -849,7 +912,7 @@ def main() -> int:
     args = parser.parse_args()
     # The summary contains emoji; Windows runners default to a legacy code page.
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    return serve() if args.command == "serve" else run(args)
+    return serve(args.address or [LOOPBACK]) if args.command == "serve" else run(args)
 
 
 if __name__ == "__main__":

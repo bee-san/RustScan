@@ -58,6 +58,8 @@ jobs:
       # Ports the Linux runners drop, to measure filtered ports (timeouts).
       # They lie above Linux's ephemeral port range (32768-60999).
       FILTERED_PORTS: "61000-62999"
+      # The Linux runners' host behind a 5 ms delay (see "Set up a host 5 ms away").
+      DELAYED_HOST: "10.200.0.2"
       RUNS: ${{ inputs.runs || '9' }}
       EXTRA: ${{ inputs.extra }}
     steps:
@@ -142,25 +144,69 @@ jobs:
           sudo iptables -S INPUT
           echo "FILTERED_OK=1" >> "$GITHUB_ENV"
 
+      - name: Set up a host 5 ms away
+        if: runner.os == 'Linux'
+        run: |
+          # A network namespace on the runner, reached over a veth pair whose
+          # outbound side delays every packet. Its answers (SYN-ACKs, resets,
+          # ICMP errors, UDP replies) arrive a round trip after the probe, as
+          # from a remote host, instead of while the probe is being sent.
+          skip() {
+            echo "::warning::$1; skipping the delayed-host scenarios"
+            exit 0
+          }
+          sudo ip netns add far || skip "cannot create a network namespace"
+          sudo ip link add rs-near type veth peer name rs-far || skip "cannot create a veth pair"
+          sudo ip link set rs-far netns far || skip "cannot move the veth end"
+          sudo ip addr add 10.200.0.1/30 dev rs-near || skip "cannot address the veth pair"
+          sudo ip link set rs-near up || skip "cannot bring up the veth pair"
+          sudo ip netns exec far ip addr add "$DELAYED_HOST/30" dev rs-far || skip "cannot address the namespace"
+          sudo ip netns exec far ip link set rs-far up || skip "cannot bring up the namespace"
+          sudo ip netns exec far ip link set lo up || true
+          # Answer every probe to a closed UDP port, like the loopback
+          # interface does (ICMP errors are rate limited everywhere else).
+          for setting in icmp_ratelimit=0 icmp_msgs_per_sec=100000000 icmp_msgs_burst=100000000; do
+            sudo ip netns exec far sysctl -qw "net.ipv4.$setting" || true
+          done
+          sudo tc qdisc add dev rs-near root netem delay 5ms limit 1000000 || skip "netem is not available"
+          tc qdisc show dev rs-near
+
+          sudo ip netns exec far "$(command -v python)" .github/scan-benchmark/scan_bench.py \
+            serve --address "$DELAYED_HOST" > "$RUNNER_TEMP/far.json" 2> "$RUNNER_TEMP/far.log" &
+          for _ in $(seq 100); do
+            if [ -s "$RUNNER_TEMP/far.json" ]; then break; fi
+            sleep 0.1
+          done
+          if [ ! -s "$RUNNER_TEMP/far.json" ]; then
+            cat "$RUNNER_TEMP/far.log" || true
+            skip "the delayed host's listeners did not start"
+          fi
+          head -c 200 "$RUNNER_TEMP/far.json"; echo
+          echo "DELAYED_OK=1" >> "$GITHUB_ENV"
+
       - name: Describe the runner
+        continue-on-error: true
         run: |
           uname -a
           if [ "$RUNNER_OS" = Linux ]; then
             nproc
             grep -m1 'model name' /proc/cpuinfo || true
-            sysctl net.ipv4.ip_local_port_range net.ipv4.tcp_tw_reuse net.core.somaxconn
-            ss -Hltnu | sort -k5 | head -n 50
+            sysctl net.ipv4.ip_local_port_range net.ipv4.tcp_tw_reuse net.core.somaxconn || true
+            ss -Hltnu | sort -k5 | head -n 50 || true
           elif [ "$RUNNER_OS" = macOS ]; then
-            sysctl hw.ncpu machdep.cpu.brand_string kern.maxfilesperproc \
-              net.inet.ip.portrange.first net.inet.ip.portrange.last net.inet.icmp.icmplim
+            for oid in hw.ncpu machdep.cpu.brand_string kern.maxfilesperproc \
+              net.inet.ip.portrange.first net.inet.ip.portrange.last; do
+              sysctl "$oid" || true
+            done
           fi
 
       - name: Run the benchmark
         run: |
           # Allow the largest batch size without RustScan shrinking it to fit
-          # the descriptor limit (macOS defaults to 256).
+          # the descriptor limit (macOS defaults to 256, and caps processes at
+          # kern.maxfilesperproc, 10240 on its runners).
           if [ "$RUNNER_OS" != Windows ]; then
-            for limit in 65536 24576 12288; do
+            for limit in 65536 24576 10240; do
               ulimit -n "$limit" 2>/dev/null && break
             done
             echo "open-file limit: $(ulimit -n)"
@@ -170,6 +216,9 @@ jobs:
           # bigger than its base (see --max-slowdown/--max-memory).
           args=(--runs "$RUNS" --gate head --json bench-results.json --markdown bench-results.md)
           if [ -n "${FILTERED_OK:-}" ]; then args+=(--filtered "$FILTERED_PORTS"); fi
+          if [ -n "${DELAYED_OK:-}" ]; then
+            args+=(--delayed-host "$DELAYED_HOST" --delayed-listeners "$RUNNER_TEMP/far.json")
+          fi
           args+=(--build "base=$RUNNER_TEMP/bin/base$EXE")
           args+=(--build "head=$RUNNER_TEMP/bin/head$EXE" --label "head=$HEAD_LABEL")
           while IFS= read -r line; do
