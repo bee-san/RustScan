@@ -15,8 +15,12 @@ runtime. Script execution runs after the runtime has been dropped. Port ordering
 exclusions, retries, UDP payloads, closed-port reporting and CLI options retain
 their existing implementations.
 
-Timeouts and port intervals retain `async_io::Timer`, the timer underneath
-async-std, independently of the Tokio socket runtime.
+Port intervals and short timeouts retain `async_io::Timer`, the timer underneath
+async-std, independently of the Tokio socket runtime. Longer timeouts first use
+Tokio's timer until 32 ms before the deadline, then use `async_io::Timer` for the
+remaining wait. This avoids registering a second timer for ordinary replies
+while leaving room for coarse timer rounding. Both phases use the original
+deadline, including time spent setting up the socket.
 An expired timer maps to `std::io::ErrorKind::TimedOut`. Socket errors retain
 their original kind, so TCP refusal reporting and UDP timeout retries continue
 to distinguish replies from failures. Successful TCP streams are converted to
@@ -96,5 +100,5 @@ window. One case completes immediately; the other expires every operation after
 samples, a one-second warmup and a five-second measurement target. These measure
 scheduling and timer costs. The [real TCP/UDP scan comparison](tokio-benchmark.md)
 records a separate measurement in an isolated loopback environment, including
-full CLI timings and the regression for short port intervals. LAN/WAN performance
+full CLI timings and short port intervals. LAN/WAN performance
 and network performance on other operating systems remain unmeasured.

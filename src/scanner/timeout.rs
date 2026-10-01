@@ -18,9 +18,27 @@ pub(super) async fn io_timeout<T>(
         return result;
     }
 
-    // Charge socket setup to the original deadline. The timer uses OS waits
-    // without rounding each short timeout up to Tokio's next millisecond tick.
-    let delay = async_io::Timer::after(duration.saturating_sub(started.elapsed()));
+    let Some(deadline) = started.checked_add(duration) else {
+        return operation.await;
+    };
+
+    // Most replies arrive well before a normal scan timeout. Keep their timers
+    // on Tokio's reactor to avoid registering each socket's deadline with a
+    // second reactor. Leave 32 ms for the precise timer to allow for coarse
+    // timer rounding (including Windows). Short timeouts use the
+    // precise timer immediately; neither phase changes the original deadline.
+    const PRECISE_WINDOW: Duration = Duration::from_millis(32);
+    if deadline.saturating_duration_since(Instant::now()) > PRECISE_WINDOW {
+        let delay =
+            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline - PRECISE_WINDOW));
+        futures::pin_mut!(delay);
+        if let Either::Left((result, _)) = select(operation.as_mut(), delay).await {
+            return result;
+        }
+    }
+
+    // OS waits avoid rounding every short timeout to the next millisecond.
+    let delay = async_io::Timer::at(deadline);
     match select(operation, delay).await {
         Either::Left((result, _)) => result,
         Either::Right(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "future timed out")),

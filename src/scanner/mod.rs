@@ -550,20 +550,34 @@ mod tests {
             }
         }
 
+        for duration in [Duration::from_millis(5), Duration::from_millis(80)] {
+            test_runtime().block_on(async {
+                let dropped = Cell::new(false);
+                let started = std::time::Instant::now();
+                let operation = async {
+                    let _guard = DropGuard(&dropped);
+                    std::future::pending::<io::Result<()>>().await
+                };
+
+                let error = io_timeout(duration, operation).await.unwrap_err();
+
+                assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+                assert!(started.elapsed() >= duration);
+                assert!(dropped.get(), "the timed-out operation must be dropped");
+            });
+        }
+    }
+
+    #[test]
+    fn operation_can_complete_before_the_precise_timeout_phase() {
         test_runtime().block_on(async {
-            let dropped = Cell::new(false);
-            let started = std::time::Instant::now();
-            let duration = Duration::from_millis(5);
-            let operation = async {
-                let _guard = DropGuard(&dropped);
-                std::future::pending::<io::Result<()>>().await
-            };
+            let result = io_timeout(Duration::from_secs(1), async {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                Ok(7)
+            })
+            .await;
 
-            let error = io_timeout(duration, operation).await.unwrap_err();
-
-            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-            assert!(started.elapsed() >= duration);
-            assert!(dropped.get(), "the timed-out operation must be dropped");
+            assert_eq!(result.unwrap(), 7);
         });
     }
 
