@@ -59,13 +59,7 @@ jobs:
       # They lie above Linux's ephemeral port range (32768-60999).
       FILTERED_PORTS: "61000-62999"
       RUNS: ${{ inputs.runs || '9' }}
-      # TEMPORARY (tokio port, #944): also compare the intermediate steps of
-      # the port and a multi-threaded-runtime variant on the Linux runners.
-      EXTRA: >-
-        ${{ inputs.extra || (startsWith(matrix.os, 'ubuntu') &&
-        'tokio-plain=3d3a880bbeaea85c7c5959c6468c575d188e8548
-        tokio-unconstrained=4860fb71d1e9779f1197f5573ad95f7438c9fdd4
-        tokio-mt=c109144c0594d683ce70137eed1b10bc73392e21' || '') }}
+      EXTRA: ${{ inputs.extra }}
     steps:
       - name: Checkout sources
         uses: actions/checkout@v7
