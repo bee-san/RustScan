@@ -112,7 +112,7 @@ fn main() {
     portscan_bench.end();
     benchmarks.push(portscan_bench);
 
-    let mut ports_per_ip = HashMap::new();
+    let mut ports_per_ip: HashMap<IpAddr, Vec<u16>> = HashMap::new();
     let mut closed_ports_per_ip: HashMap<IpAddr, Vec<u16>> = HashMap::new();
 
     for status in scan_result {
@@ -120,9 +120,7 @@ fn main() {
             PortStatus::Open(socket) => (&mut ports_per_ip, socket),
             PortStatus::Closed(socket) => (&mut closed_ports_per_ip, socket),
         };
-        map.entry(socket.ip())
-            .or_insert_with(Vec::new)
-            .push(socket.port());
+        map.entry(socket.ip()).or_default().push(socket.port());
     }
 
     for ip in ips {
@@ -157,7 +155,9 @@ fn main() {
         detail!("Starting Script(s)", opts.greppable, opts.accessible);
 
         // Run all the scripts we found and parsed based on the script config file tags field.
-        for mut script_f in scripts_to_run.clone() {
+        for script_f in &scripts_to_run {
+            // Clone only the script being run instead of the whole list per IP.
+            let mut script_f = script_f.clone();
             // This part allows us to add commandline arguments to the Script call_format, appending them to the end of the command.
             if !opts.command.is_empty() {
                 let user_extra_args = &opts.command.join(" ");
@@ -300,7 +300,10 @@ fn adjust_ulimit_size(opts: &Opts) -> usize {
     }
 
     let (soft, _) = Resource::NOFILE.get().unwrap();
-    soft.try_into().unwrap_or(usize::MAX)
+    // On 32-bit targets the soft limit (e.g. RLIM_INFINITY) may not fit in a
+    // usize. Fall back to the conservative default rather than usize::MAX,
+    // which would skip every batch-size adjustment in infer_batch_size.
+    soft.try_into().unwrap_or(DEFAULT_FILE_DESCRIPTORS_LIMIT)
 }
 
 #[cfg(unix)]
@@ -317,7 +320,7 @@ fn infer_batch_size(opts: &Opts, ulimit: usize) -> usize {
         // selected a batch size higher than this we should reduce it to
         // a lower number.
         if ulimit < AVERAGE_BATCH_SIZE {
-            // ulimit is smaller than aveage batch size
+            // ulimit is smaller than average batch size
             // user must have very small ulimit
             // decrease batch size to half of ulimit
             warning!("Your file limit is very small, which negatively impacts RustScan's speed. Use the Docker image, or up the Ulimit with '--ulimit 5000'. ", opts.greppable, opts.accessible);
