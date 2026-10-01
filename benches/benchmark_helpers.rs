@@ -10,6 +10,10 @@ use std::io;
 use std::net::IpAddr;
 use std::time::Duration;
 
+// Benchmark the production timeout path with simulated I/O operations.
+#[path = "../src/scanner/timeout.rs"]
+mod timeout;
+
 fn bench_address() {
     let _addrs = ["127.0.0.1".parse::<IpAddr>().unwrap()];
 }
@@ -52,14 +56,13 @@ fn old_payload_for_port(udp_map: &'static BTreeMap<Vec<u16>, Vec<u8>>, port: u16
 // Exercise the scanner's bounded scheduling pattern without opening sockets.
 // Ready operations model immediate replies; pending operations expire instead.
 async fn simulated_operation(expires: bool) -> io::Result<()> {
-    tokio::time::timeout(Duration::from_millis(10), async {
+    timeout::io_timeout(Duration::from_millis(10), async {
         if expires {
             std::future::pending::<()>().await;
         }
         Ok(())
     })
     .await
-    .map_err(|error| io::Error::new(io::ErrorKind::TimedOut, error))?
 }
 
 async fn simulated_batch(expires: bool) {

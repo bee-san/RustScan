@@ -6,8 +6,7 @@ and [#944](https://github.com/bee-san/RustScan/issues/944), based on master at
 
 ## CLI behavior
 
-TCP connections, UDP sockets, connection/receive timeouts, and the delay between
-ports now use Tokio. The CLI creates a runtime on the calling thread for the
+TCP connections and UDP sockets now use Tokio. The CLI creates a runtime on the calling thread for the
 scan. `FuturesUnordered` still polls at most `batch_size` socket attempts at once;
 concurrent sockets do not require a thread per socket or a task per socket.
 
@@ -16,15 +15,19 @@ runtime. Script execution runs after the runtime has been dropped. Port ordering
 exclusions, retries, UDP payloads, closed-port reporting and CLI options retain
 their existing implementations.
 
+Timeouts and port intervals use the runtime-independent `futures-timer` crate.
 An expired timer maps to `std::io::ErrorKind::TimedOut`. Socket errors retain
 their original kind, so TCP refusal reporting and UDP timeout retries continue
 to distinguish replies from failures. Successful TCP streams are converted to
 standard streams, shut down in both directions, and dropped before another
 attempt is polled.
 
-Tokio timers have millisecond granularity, with potentially coarser resolution
-on Windows. Very short timeouts and intervals can therefore take longer than
-with the previous runtime; they are minimum waits, not precision deadlines.
+Using Tokio's timers for short waits added approximately one millisecond per
+interval in the first benchmark. `futures-timer` uses a shared helper thread and
+OS waits, avoiding that extra rounding while keeping the async runtime responsive.
+Dropping a scan cancels its timers; runtime shutdown never has to wait for a
+sleeping blocking task. Immediately ready I/O operations avoid timer allocation,
+and the time spent polling a pending operation is charged to its original timeout.
 
 ## Library callers
 
@@ -68,10 +71,14 @@ owns its own runtime and performs blocking lookups.
 The direct Tokio dependency enables only `rt`, `net`, and `time`; `test-util` is
 enabled for deterministic tests with a paused clock. Tokio was already present
 through Hickory. The existing `futures` dependency continues to provide
-`FuturesUnordered` and `StreamExt`.
+`FuturesUnordered`, `StreamExt` and future polling. The new `futures-timer` 3.0.4
+dependency has no transitive dependencies on native targets; its purpose is to
+preserve short timeout and interval performance. `async-std` is absent from the
+resolved dependency tree.
 
 Regression tests cover successful operations (including zero-byte responses),
-preservation of I/O errors, timeout cancellation, and interval timing with
+preservation of I/O errors, timeout cancellation, immediate results at a zero
+deadline, wakeups during the first poll, scan cancellation, and interval timing with
 excluded or empty port sets. They use simulated operations and scanners with no
 target addresses, following the repository's rule against network tests.
 

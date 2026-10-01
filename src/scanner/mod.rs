@@ -5,7 +5,9 @@ use crate::tui::println_safe;
 use log::debug;
 
 mod socket_iterator;
+mod timeout;
 use socket_iterator::SocketIterator;
+use timeout::io_timeout;
 
 use colored::Colorize;
 use futures::{stream::FuturesUnordered, StreamExt};
@@ -19,21 +21,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::{
-    net::{TcpStream, UdpSocket},
-    time::{sleep, timeout},
-};
-
-/// Keep I/O errors intact while mapping an expired Tokio timer to `TimedOut`.
-/// Dropping the timed-out future also cancels its pending socket operation.
-async fn io_timeout<T>(
-    duration: Duration,
-    operation: impl Future<Output = io::Result<T>>,
-) -> io::Result<T> {
-    timeout(duration, operation)
-        .await
-        .map_err(|error| io::Error::new(io::ErrorKind::TimedOut, error))?
-}
+use tokio::net::{TcpStream, UdpSocket};
 
 /// UDP payload lookup: port -> payload bytes
 ///
@@ -174,6 +162,18 @@ impl Scanner {
     ///
     /// Must be awaited inside a Tokio runtime with I/O and time enabled.
     pub async fn run_with_status(&self) -> Vec<PortStatus> {
+        // Tokio's millisecond rounding adds about 1 ms to each short interval.
+        // This cancellable delay keeps the requested spacing without blocking
+        // the async runtime or accumulating that rounding on every port.
+        self.run_with_delay(futures_timer::Delay::new).await
+    }
+
+    /// Supplying the delay lets tests verify spacing with a virtual clock.
+    async fn run_with_delay<D, F>(&self, delay: D) -> Vec<PortStatus>
+    where
+        D: Fn(Duration) -> F,
+        F: Future<Output = ()>,
+    {
         let ports: Vec<u16> = self
             .port_strategy
             .order()
@@ -209,7 +209,7 @@ impl Scanner {
             // before moving on to the next port.
             for (i, port) in ports.iter().enumerate() {
                 if i > 0 {
-                    sleep(self.interval).await;
+                    delay(self.interval).await;
                 }
                 let sockets = SocketIterator::new(&self.ips, std::slice::from_ref(port));
                 self.scan_sockets(sockets, &udp_payloads, &mut found_sockets, &mut errors)
@@ -505,6 +505,37 @@ mod tests {
     }
 
     #[test]
+    fn ready_operation_wins_at_zero_timeout() {
+        test_runtime().block_on(async {
+            assert_eq!(
+                io_timeout(Duration::ZERO, async { Ok(7) }).await.unwrap(),
+                7
+            );
+        });
+    }
+
+    #[test]
+    fn timeout_preserves_wakes_from_the_first_poll() {
+        test_runtime().block_on(async {
+            let mut polled = false;
+            let operation = std::future::poll_fn(|context| {
+                if polled {
+                    std::task::Poll::Ready(Ok(7))
+                } else {
+                    polled = true;
+                    context.waker().wake_by_ref();
+                    std::task::Poll::Pending
+                }
+            });
+
+            assert_eq!(
+                io_timeout(Duration::from_secs(1), operation).await.unwrap(),
+                7
+            );
+        });
+    }
+
+    #[test]
     fn expired_timeout_cancels_the_operation() {
         use std::cell::Cell;
 
@@ -518,8 +549,8 @@ mod tests {
 
         test_runtime().block_on(async {
             let dropped = Cell::new(false);
-            let started = tokio::time::Instant::now();
-            let duration = Duration::from_millis(100);
+            let started = std::time::Instant::now();
+            let duration = Duration::from_millis(5);
             let operation = async {
                 let _guard = DropGuard(&dropped);
                 std::future::pending::<io::Result<()>>().await
@@ -543,8 +574,43 @@ mod tests {
             scanner.exclude_ports = vec![443];
             let started = tokio::time::Instant::now();
 
-            assert!(scanner.run_with_status().await.is_empty());
+            assert!(scanner.run_with_delay(tokio::time::sleep).await.is_empty());
             assert_eq!(started.elapsed(), interval * 2);
+        });
+    }
+
+    #[test]
+    fn dropping_a_scan_cancels_a_pending_interval() {
+        use std::cell::Cell;
+        use std::task::Poll;
+
+        struct PendingDelay<'a>(&'a Cell<bool>);
+
+        impl Future for PendingDelay<'_> {
+            type Output = ();
+
+            fn poll(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> Poll<()> {
+                Poll::Pending
+            }
+        }
+
+        impl Drop for PendingDelay<'_> {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+
+        test_runtime().block_on(async {
+            let dropped = Cell::new(false);
+            let mut scanner = test_scanner().with_interval(Duration::from_secs(3600));
+            scanner.ips.clear();
+            scanner.port_strategy = PortStrategy::Manual(vec![80, 443]);
+
+            let mut scan = Box::pin(scanner.run_with_delay(|_| PendingDelay(&dropped)));
+            assert!(futures::poll!(scan.as_mut()).is_pending());
+            assert!(!dropped.get());
+            drop(scan);
+            assert!(dropped.get());
         });
     }
 
