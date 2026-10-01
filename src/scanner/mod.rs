@@ -169,6 +169,18 @@ impl Scanner {
     /// definitive answer: open sockets, plus closed sockets when
     /// [`Self::with_closed_ports`] is enabled.
     pub async fn run_with_status(&self) -> Vec<PortStatus> {
+        // Every in-flight socket is polled from this single future through a
+        // `FuturesUnordered`. Under Tokio's cooperative budget the future
+        // would be forced to yield after ~128 sockets made progress, and the
+        // `FuturesUnordered` would then re-poll every other ready socket just
+        // to have it return `Pending` again. Opt out, so a poll handles all
+        // ready sockets in one go, as it did with async-std. The future still
+        // returns `Pending` (and lets the runtime poll I/O and timers)
+        // whenever no socket is ready.
+        tokio::task::unconstrained(self.scan()).await
+    }
+
+    async fn scan(&self) -> Vec<PortStatus> {
         let ports: Vec<u16> = self
             .port_strategy
             .order()
