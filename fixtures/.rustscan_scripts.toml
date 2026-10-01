@@ -1,0 +1,4 @@
+tags = ["core_approved", "example"]
+ports = ["80", "443", "8080"]
+developer = ["example", "https://example.org"]
+directory = "fixtures/.rustscan_scripts" 

@@ -40,7 +40,7 @@ MacOS:
 Arch:
 
 ```
-  yay rustscan
+  pacman -S rustscan
 ```
 
 # ✨ Features
@@ -55,12 +55,14 @@ Arch:
 
 |         <!--Installation Guide-->          |          <!--Documentation-->          |       <!--Discord-->        |
 | :----------------------------------------: | :------------------------------------: | :-------------------------: |
-| :book: [Installation Guide][links-table-1] | :books: [Documentation][links-table-2] | :parrot: [Discord][discord] |
+| :book: [Installation Guide][toc-install] | :books: [Documentation][links-table-2] | :parrot: [Discord][discord] |
+|                                          | :penguin: [ARM Support](docs/arm-support.md) |                           |
 
 ## 🙋 Table of Contents
 
 - 📖 [Installation Guide][toc-install]
 - 🐋 [Docker Usage][toc-docker-usage]
+- 🐧 [ARM Support](docs/arm-support.md)
 - 🦜 [Discord][discord]
 - 🤸 [Usage][usage-1]
 
@@ -209,7 +211,7 @@ This project follows the [all-contributors](https://github.com/all-contributors/
 [speed-3]: https://github.com/RustScan/RustScan/wiki/Increasing-Speed-&-Accuracy "Increasing Speed & Accuracy"
 [toc-community]: https://github.com/RustScan/RustScan#-community "Community"
 [links-table-1]: https://github.com/RustScan/RustScan#-full-installation-guide "Full installation guide"
-[links-table-2]: https://rustscan.github.io/RustScan/ "Rustscan"
+[links-table-2]: https://github.com/bee-san/RustScan/wiki "Rustscan"
 [discord]: http://discord.skerritt.blog "Discord blog"
 [toc-install]: https://github.com/RustScan/RustScan/wiki/Installation-Guide "Installation Guide Wiki"
 [toc-docker-usage]: https://github.com/RustScan/RustScan/wiki/Installation-Guide#docker- "Docker Installation Guide Wiki"
@@ -232,4 +234,4 @@ This project follows the [all-contributors](https://github.com/all-contributors/
 [badge-3]: https://img.shields.io/github/downloads/rustscan/rustscan/total?label=GitHub%20Downloads
 [badge-4]: https://img.shields.io/crates/d/rustscan?label=Cargo%20Downloads
 [badge-5]: https://img.shields.io/discord/754001738184392704
-[badge-6]: https://github.com/RustScan/RustScan/workflows/Build/badge.svg?branch=master
+[badge-6]: https://github.com/RustScan/RustScan/actions/workflows/build.yml/badge.svg?branch=master

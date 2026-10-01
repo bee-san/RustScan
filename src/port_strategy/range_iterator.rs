@@ -1,71 +1,196 @@
 use gcd::Gcd;
-use rand::Rng;
+use rand::RngExt;
 use std::convert::TryInto;
 
+/// Yields ports produced from a collection of (possibly overlapping)
+/// inclusive `u16` ranges in two modes:
+///
+/// **Randomized** — created by `RangeIterator::new_random`:
+///    - The algorithm generates a permutation of indices `0..N-1` using the
+///      additive congruential step `x_{i+1} = (x_i + step) % N`.
+///    - `step` is chosen so `gcd(step, N) == 1` to ensure the sequence is a
+///      full-length cycle (visits each index exactly once).
+///    - `x_0` (the seed stored as `normalized_first_pick`) is chosen uniformly
+///      in `0..N`.
+///
+///      For more information: <https://en.wikipedia.org/wiki/Linear_congruential_generator>
+///
+/// **Serial** — `RangeIterator::new_serial`:
+///     Iterates the input ranges in the **original input order** and yields
+///     each port the first time it is encountered. Duplicate ports (from
+///     overlapping ranges) are skipped using a 65_536-entry "seen" table.
 pub struct RangeIterator {
     active: bool,
-    normalized_end: u32,
+    total: u32,
     normalized_first_pick: u32,
     normalized_pick: u32,
-    actual_start: u32,
     step: u32,
+    ranges: Vec<(u32, u32)>,
+    prefix: Vec<u32>,
+    serial_itr: Option<Box<dyn Iterator<Item = u16>>>,
+    /// `seen[port]` is true once `port` has been yielded (serial mode only).
+    serial_seen: Option<Vec<bool>>,
 }
 
-/// An iterator that follows the `Linear Congruential Generator` algorithm.
-///
-/// For more information: <https://en.wikipedia.org/wiki/Linear_congruential_generator>
 impl RangeIterator {
-    /// Receives the start and end of a range and normalize
-    /// these values before selecting a coprime for the end of the range
-    /// which will server as the step for the algorithm.
+    /// Construct a randomized iterator (LCG permutation).
     ///
-    /// For example, the range `1000-2500` will be normalized to `0-1500`
-    /// before going through the algorithm.
-    pub fn new(start: u32, end: u32) -> Self {
-        let normalized_end = end - start + 1;
-        let step = pick_random_coprime(normalized_end);
+    /// Preconditions:
+    /// - `input` must contain at least one `(u16,u16)`
+    ///   and each pair must satisfy `start <= end`.
+    pub fn new_random(input: &[(u16, u16)]) -> Self {
+        // normalize & merge into (start, len) u32 pairs
+        // Example: [(10,12),(11,15)] -> merged [(10,6)]
+        let mut ranges: Vec<(u32, u32)> = input
+            .iter()
+            .map(|(s, e)| {
+                let start = *s as u32;
+                let end_excl = (*e as u32) + 1; // convert inclusive -> exclusive
+                (start, end_excl)
+            })
+            .collect();
 
-        // Randomly choose a number within the range to be the first
-        // and assign it as a pick.
-        let mut rng = rand::thread_rng();
-        let normalized_first_pick = rng.gen_range(0..normalized_end);
+        ranges.sort_unstable_by_key(|&(s, _)| s);
+
+        let mut merged: Vec<(u32, u32)> = Vec::with_capacity(ranges.len());
+        if !ranges.is_empty() {
+            let mut iter = ranges.into_iter();
+            let (mut cur_s, mut cur_end) = iter.next().unwrap(); // cur_end exclusive
+            for (s, end_excl) in iter {
+                if s <= cur_end {
+                    // overlap/adjacent -> extend
+                    if end_excl > cur_end {
+                        cur_end = end_excl;
+                    }
+                } else {
+                    // push disjoint segment as (start, len)
+                    merged.push((cur_s, cur_end - cur_s)); // len = excl - start
+                    cur_s = s;
+                    cur_end = end_excl;
+                }
+            }
+            merged.push((cur_s, cur_end - cur_s));
+        }
+        // build prefix sums (prefix[0] = 0; prefix.len() == merged.len() + 1)
+        let prefix = merged.iter().fold(vec![0u32], |mut acc, (_, len)| {
+            let last = acc.last().unwrap();
+            acc.push(last.saturating_add(*len));
+            acc
+        });
+
+        // total is guaranteed > 0 by precondition (input.len() >= 1)
+        let total = *prefix.last().unwrap();
+
+        // pick step and seed
+        let step = pick_random_coprime(total);
+        let mut rng = rand::rng();
+        let first = rng.random_range(0..total);
 
         Self {
             active: true,
-            normalized_end,
+            total,
+            normalized_first_pick: first,
+            normalized_pick: first,
             step,
-            normalized_first_pick,
-            normalized_pick: normalized_first_pick,
-            actual_start: start,
+            ranges: merged,
+            prefix,
+            serial_itr: None,
+            serial_seen: None,
+        }
+    }
+
+    /// Construct a serial iterator that yields ports in original input order,
+    /// skipping duplicates. The deduplication is done on the fly with a seen-table.
+    ///
+    /// Preconditions:
+    /// - `input` must contain at least one `(u16,u16)` and each pair must satisfy `start <= end`.
+    pub fn new_serial(input: &[(u16, u16)]) -> Self {
+        // Build a serial iterator that yields ports in *input order* (start..=end).
+        // We keep the merged ranges/prefix empty here (they are not needed for serial mode).
+        let input = input.to_vec();
+        let serial_itr = input.into_iter().flat_map(|(start, end)| start..=end);
+
+        let serial_itr_boxed: Box<dyn Iterator<Item = u16>> = Box::new(serial_itr);
+        // One entry per possible port (0..=65535).
+        let seen = vec![false; usize::from(u16::MAX) + 1];
+
+        Self {
+            active: true,
+            total: 0,
+            normalized_first_pick: 0,
+            normalized_pick: 0,
+            step: 0,
+            ranges: Vec::new(),
+            prefix: Vec::new(),
+            serial_itr: Some(serial_itr_boxed),
+            serial_seen: Some(seen),
         }
     }
 }
-
 impl Iterator for RangeIterator {
     type Item = u16;
 
-    // The next step is always bound by the formula: N+1 = (N + STEP) % TOP_OF_THE_RANGE
-    // It will only stop once we generate a number equal to the first generated number.
+    /// Advance the iterator by one port.
+    ///
+    /// 1. Read the current normalized index `cur`.
+    /// 2. Compute `next = (cur + step) % total` and update `normalized_pick`.
+    /// 3. If `next == normalized_first_pick` mark `active = false` (we completed the cycle).
+    /// 4. Map the returned index `cur` into the merged ranges via the prefix array:
+    ///    - find the range index `idx` where `prefix[idx] <= cur < prefix[idx+1]`,
+    ///    - offset = `cur - prefix[idx]`,
+    ///    - port = `ranges[idx].0 + offset`.
+    /// 5. Return `port as u16`.
+    ///
     fn next(&mut self) -> Option<Self::Item> {
         if !self.active {
             return None;
         }
 
-        let current_pick = self.normalized_pick;
-        let next_pick = (current_pick + self.step) % self.normalized_end;
+        // SERIAL iterator fast-path: preserve original input order but skip duplicates.
+        if let (Some(it), Some(seen)) = (self.serial_itr.as_mut(), self.serial_seen.as_mut()) {
+            for p in it.by_ref() {
+                // Yield each port only the first time it is seen.
+                if !std::mem::replace(&mut seen[usize::from(p)], true) {
+                    return Some(p);
+                }
+                // otherwise skip duplicate and continue
+            }
+            // serial iterator exhausted: drop it and mark inactive
+            self.serial_itr = None;
+            self.serial_seen = None;
+            self.active = false;
+            return None;
+        }
 
-        // If the next pick is equal to the first pick this means that
-        // we have iterated through the entire range.
-        if next_pick == self.normalized_first_pick {
+        // RANDOMIZED (LCG) path
+        let cur = self.normalized_pick;
+        let next = (cur + self.step) % self.total;
+
+        // if next equals the original seed we finished the cycle after returning cur
+        if next == self.normalized_first_pick {
             self.active = false;
         }
 
-        self.normalized_pick = next_pick;
-        Some(
-            (self.actual_start + current_pick)
-                .try_into()
-                .expect("Could not convert u32 to u16"),
-        )
+        self.normalized_pick = next;
+
+        // Map cur -> port using prefix + ranges (binary search)
+        let mut lo: usize = 0;
+        let mut hi: usize = self.ranges.len();
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if self.prefix[mid + 1] > cur {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        let idx = lo;
+        let offset = cur - self.prefix[idx];
+        let (start, _len) = self.ranges[idx];
+        let port = (start + offset)
+            .try_into()
+            .expect("Could not convert u32 to u16");
+        Some(port)
     }
 }
 
@@ -83,14 +208,14 @@ fn pick_random_coprime(end: u32) -> u32 {
     let range_boundary = end / 4;
     let lower_range = range_boundary;
     let upper_range = end - range_boundary;
-    let mut rng = rand::thread_rng();
-    let mut candidate = rng.gen_range(lower_range..upper_range);
+    let mut rng = rand::rng();
+    let mut candidate = rng.random_range(lower_range..upper_range);
 
     for _ in 0..10 {
         if end.gcd(candidate) == 1 {
             return candidate;
         }
-        candidate = rng.gen_range(lower_range..upper_range);
+        candidate = rng.random_range(lower_range..upper_range);
     }
 
     end - 1
@@ -98,36 +223,105 @@ fn pick_random_coprime(end: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::RangeIterator;
+    use super::*;
+    use std::collections::HashSet;
 
-    #[test]
-    fn range_iterator_iterates_through_the_entire_range() {
-        let result = generate_sorted_range(1, 10);
-        let expected_range = (1..=10).collect::<Vec<u16>>();
-        assert_eq!(expected_range, result);
-
-        let result = generate_sorted_range(1, 100);
-        let expected_range = (1..=100).collect::<Vec<u16>>();
-        assert_eq!(expected_range, result);
-
-        let result = generate_sorted_range(1, 1000);
-        let expected_range = (1..=1000).collect::<Vec<u16>>();
-        assert_eq!(expected_range, result);
-
-        let result = generate_sorted_range(1, 65_535);
-        let expected_range = (1..=65_535).collect::<Vec<u16>>();
-        assert_eq!(expected_range, result);
-
-        let result = generate_sorted_range(1000, 2000);
-        let expected_range = (1000..=2000).collect::<Vec<u16>>();
-        assert_eq!(expected_range, result);
+    // Helper: collect, sort and return ports produced by randomized RangeIterator
+    fn generate_sorted_from_ranges_random(input: &[(u16, u16)]) -> Vec<u16> {
+        let mut it = RangeIterator::new_random(input);
+        let mut v: Vec<u16> = it.by_ref().collect();
+        v.sort_unstable();
+        v
     }
 
-    fn generate_sorted_range(start: u32, end: u32) -> Vec<u16> {
-        let range = RangeIterator::new(start, end);
-        let mut result = range.into_iter().collect::<Vec<u16>>();
-        result.sort_unstable();
+    // Helper: collect, sort and return ports produced by serial RangeIterator
+    fn generate_sorted_from_ranges_serial(input: &[(u16, u16)]) -> Vec<u16> {
+        let mut it = RangeIterator::new_serial(input);
+        let mut v: Vec<u16> = it.by_ref().collect();
+        v.sort_unstable();
+        v
+    }
 
-        result
+    // Build expected sorted unique ports from input ranges (inclusive)
+    fn expected_ports_from_ranges(input: &[(u16, u16)]) -> Vec<u16> {
+        let mut s = HashSet::new();
+        for &(start, end) in input {
+            for p in start..=end {
+                s.insert(p);
+            }
+        }
+        let mut v: Vec<u16> = s.into_iter().collect();
+        v.sort_unstable();
+        v
+    }
+
+    #[test]
+    fn random_range_iterator_test() {
+        // small disjoint ranges
+        let input = &[(1u16, 10u16), (20u16, 30u16), (100u16, 110u16)];
+        let result = generate_sorted_from_ranges_random(input);
+        let expected = expected_ports_from_ranges(input);
+        assert_eq!(expected, result);
+
+        // larger disjoint ranges
+        let input = &[(1u16, 100u16), (200u16, 500u16)];
+        let result = generate_sorted_from_ranges_random(input);
+        let expected = expected_ports_from_ranges(input);
+        assert_eq!(expected, result);
+
+        // overlapping and adjacent
+        let input = &[(10u16, 20u16), (15u16, 25u16), (26u16, 30u16)];
+        let result = generate_sorted_from_ranges_random(input);
+        let expected = expected_ports_from_ranges(input);
+        assert_eq!(expected, result);
+
+        // near-full domain (heavy): we only assert lengths & equality
+        let input = &[(1u16, 65_535u16)];
+        let result = generate_sorted_from_ranges_random(input);
+        let expected = expected_ports_from_ranges(input);
+        assert_eq!(expected.len(), result.len());
+        assert_eq!(expected, result);
+
+        // multiple disjoint ranges - check dedupe & coverage
+        let input = &[(50u16, 100u16), (1000u16, 2000u16), (30000u16, 30010u16)];
+        let result = generate_sorted_from_ranges_random(input);
+        let set_len = result.iter().copied().collect::<HashSet<u16>>().len();
+        assert_eq!(set_len, result.len());
+        let expected = expected_ports_from_ranges(input);
+        assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn serial_range_iterator_test() {
+        // serial should preserve input-order semantics but here we only assert
+        // coverage (no duplicates) by sorting results and comparing expected set.
+
+        // small disjoint ranges
+        let input = &[(1u16, 10u16), (20u16, 30u16), (100u16, 110u16)];
+        let result = generate_sorted_from_ranges_serial(input);
+        let expected = expected_ports_from_ranges(input);
+        assert_eq!(expected, result);
+
+        // overlapping and adjacent
+        let input = &[(10u16, 20u16), (15u16, 25u16), (26u16, 30u16)];
+        let result = generate_sorted_from_ranges_serial(input);
+        let expected = expected_ports_from_ranges(input);
+        assert_eq!(expected, result);
+
+        // multiple disjoint ranges
+        let input = &[(50u16, 100u16), (1000u16, 2000u16), (30000u16, 30010u16)];
+        let result = generate_sorted_from_ranges_serial(input);
+        let set_len = result.iter().copied().collect::<HashSet<u16>>().len();
+        assert_eq!(set_len, result.len());
+        let expected = expected_ports_from_ranges(input);
+        assert_eq!(expected, result);
+
+        // all possible inputs
+        let input = &[(u16::MIN, u16::MAX)];
+        let result = generate_sorted_from_ranges_serial(input);
+        let set_len = result.iter().copied().collect::<HashSet<u16>>().len();
+        assert_eq!(set_len, result.len());
+        let expected = expected_ports_from_ranges(input);
+        assert_eq!(expected, result);
     }
 }

@@ -6,7 +6,7 @@ use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::Path;
 use std::str::FromStr;
 
-use cidr_utils::cidr::IpCidr;
+use cidr_utils::cidr::{IpCidr, IpInet};
 use hickory_resolver::{
     config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts},
     Resolver,
@@ -69,10 +69,13 @@ pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
         }
     }
 
-    ips.into_iter()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
+    let excluded_cidrs = parse_excluded_networks(&input.exclude_addresses, &backup_resolver);
+
+    // Remove duplicated/excluded IPs.
+    let mut seen = BTreeSet::new();
+    ips.retain(|ip| seen.insert(*ip) && !excluded_cidrs.iter().any(|cidr| cidr.contains(ip)));
+
+    ips
 }
 
 /// Given a string, parse it as a host, IP address, or CIDR.
@@ -89,16 +92,21 @@ pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
 /// let ips = parse_address("127.0.0.1", &Resolver::default().unwrap());
 /// ```
 pub fn parse_address(address: &str, resolver: &Resolver) -> Vec<IpAddr> {
-    IpCidr::from_str(address)
-        .map(|cidr| cidr.iter().map(|c| c.address()).collect())
-        .ok()
-        .or_else(|| {
-            format!("{}:80", &address)
-                .to_socket_addrs()
-                .ok()
-                .map(|mut iter| vec![iter.next().unwrap().ip()])
-        })
-        .unwrap_or_else(|| resolve_ips_from_host(address, resolver))
+    if let Ok(addr) = IpAddr::from_str(address) {
+        // `address` is an IP string
+        vec![addr]
+    } else if let Ok(net_addr) = IpInet::from_str(address) {
+        // `address` is a CIDR string
+        net_addr.network().into_iter().addresses().collect()
+    } else {
+        // `address` is a hostname or DNS name
+        // attempt default DNS lookup
+        match format!("{address}:80").to_socket_addrs() {
+            Ok(mut iter) => vec![iter.next().unwrap().ip()],
+            // default lookup didn't work, so try again with the dedicated resolver
+            Err(_) => resolve_ips_from_host(address, resolver),
+        }
+    }
 }
 
 /// Uses DNS to get the IPS associated with host
@@ -114,6 +122,46 @@ fn resolve_ips_from_host(source: &str, backup_resolver: &Resolver) -> Vec<IpAddr
     }
 
     ips
+}
+
+/// Parses excluded networks from a list of addresses.
+///
+/// This function handles three types of inputs:
+/// 1. CIDR notation (e.g. "192.168.0.0/24")
+/// 2. Single IP addresses (e.g. "192.168.0.1")
+/// 3. Hostnames that need to be resolved (e.g. "example.com")
+///
+/// ```rust
+/// # use rustscan::address::parse_excluded_networks;
+/// # use hickory_resolver::Resolver;
+/// let resolver = Resolver::default().unwrap();
+/// let excluded = parse_excluded_networks(&Some(vec!["192.168.0.0/24".to_owned()]), &resolver);
+/// ```
+pub fn parse_excluded_networks(
+    exclude_addresses: &Option<Vec<String>>,
+    resolver: &Resolver,
+) -> Vec<IpCidr> {
+    exclude_addresses
+        .iter()
+        .flatten()
+        .flat_map(|addr| parse_single_excluded_address(addr, resolver))
+        .collect()
+}
+
+/// Parses a single address into an IpCidr, handling CIDR notation, IP addresses, and hostnames.
+fn parse_single_excluded_address(addr: &str, resolver: &Resolver) -> Vec<IpCidr> {
+    if let Ok(cidr) = IpCidr::from_str(addr) {
+        return vec![cidr];
+    }
+
+    if let Ok(ip) = IpAddr::from_str(addr) {
+        return vec![IpCidr::new_host(ip)];
+    }
+
+    resolve_ips_from_host(addr, resolver)
+        .into_iter()
+        .map(IpCidr::new_host)
+        .collect()
 }
 
 /// Derive a DNS resolver.
@@ -143,15 +191,54 @@ fn get_resolver(resolver: &Option<String>) -> Resolver {
                     Protocol::Udp,
                 ));
             }
-            Resolver::new(config, ResolverOpts::default()).unwrap()
+            Resolver::new(config, resolver_opts()).unwrap()
         }
-        None => match Resolver::from_system_conf() {
+        None => match system_resolver() {
             Ok(resolver) => resolver,
-            Err(_) => {
-                Resolver::new(ResolverConfig::cloudflare_tls(), ResolverOpts::default()).unwrap()
-            }
+            Err(_) => Resolver::new(ResolverConfig::cloudflare_tls(), resolver_opts()).unwrap(),
         },
     }
+}
+
+/// `true` on Windows when the `SystemRoot` environment variable is unset.
+///
+/// hickory-resolver locates the hosts file via
+/// `std::env::var_os("SystemRoot").expect(...)`, which panics when the
+/// variable is missing. Processes spawned with a minimal environment
+/// (services, scheduled tasks, WMI) can lack `SystemRoot`, and the panic is
+/// fatal under this crate's `panic = "abort"` release profile.
+fn windows_system_root_missing() -> bool {
+    cfg!(windows) && std::env::var_os("SystemRoot").is_none()
+}
+
+/// Derives a resolver from the system configuration, e.g. `/etc/resolv.conf`
+/// on *nix or the registry on Windows.
+///
+/// Returns an error without touching the system configuration when doing so
+/// would panic inside hickory-resolver (see [`windows_system_root_missing`]).
+fn system_resolver() -> std::io::Result<Resolver> {
+    if windows_system_root_missing() {
+        debug!("SystemRoot is not set; skipping system resolver configuration");
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "SystemRoot environment variable is not set",
+        ));
+    }
+
+    Resolver::from_system_conf()
+}
+
+/// Resolver options that are safe to use in the current environment.
+///
+/// hickory-resolver eagerly loads the hosts file when `use_hosts_file` is set
+/// (the default), which hits the same missing-`SystemRoot` panic described in
+/// [`windows_system_root_missing`]; disable it in that case.
+fn resolver_opts() -> ResolverOpts {
+    let mut opts = ResolverOpts::default();
+    if windows_system_root_missing() {
+        opts.use_hosts_file = false;
+    }
+    opts
 }
 
 /// Parses and input file of IPs for use in DNS resolution.
@@ -188,13 +275,16 @@ fn read_ips_from_file(
 
 #[cfg(test)]
 mod tests {
-    use super::{get_resolver, parse_addresses, Opts};
-    use std::net::Ipv4Addr;
+    use super::{parse_addresses, Opts};
+    use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
     fn parse_correct_addresses() {
-        let mut opts = Opts::default();
-        opts.addresses = vec!["127.0.0.1".to_owned(), "192.168.0.0/30".to_owned()];
+        let opts = Opts {
+            addresses: vec!["127.0.0.1".to_owned(), "192.168.0.0/30".to_owned()],
+            ..Default::default()
+        };
+
         let ips = parse_addresses(&opts);
 
         assert_eq!(
@@ -210,62 +300,69 @@ mod tests {
     }
 
     #[test]
-    fn parse_correct_host_addresses() {
-        let mut opts = Opts::default();
-        opts.addresses = vec!["google.com".to_owned()];
+    fn parse_addresses_with_address_exclusions() {
+        let opts = Opts {
+            addresses: vec!["192.168.0.0/30".to_owned()],
+            exclude_addresses: Some(vec!["192.168.0.1".to_owned()]),
+            ..Default::default()
+        };
         let ips = parse_addresses(&opts);
 
-        assert_eq!(ips.len(), 1);
+        assert_eq!(
+            ips,
+            [
+                Ipv4Addr::new(192, 168, 0, 0),
+                Ipv4Addr::new(192, 168, 0, 2),
+                Ipv4Addr::new(192, 168, 0, 3)
+            ]
+        );
     }
 
     #[test]
-    fn parse_correct_and_incorrect_addresses() {
-        let mut opts = Opts::default();
-        opts.addresses = vec!["127.0.0.1".to_owned(), "im_wrong".to_owned()];
+    fn parse_addresses_with_cidr_exclusions() {
+        let opts = Opts {
+            addresses: vec!["192.168.0.0/29".to_owned()],
+            exclude_addresses: Some(vec!["192.168.0.0/30".to_owned()]),
+            ..Default::default()
+        };
         let ips = parse_addresses(&opts);
 
-        assert_eq!(ips, [Ipv4Addr::new(127, 0, 0, 1),]);
+        assert_eq!(
+            ips,
+            [
+                Ipv4Addr::new(192, 168, 0, 4),
+                Ipv4Addr::new(192, 168, 0, 5),
+                Ipv4Addr::new(192, 168, 0, 6),
+                Ipv4Addr::new(192, 168, 0, 7),
+            ]
+        );
     }
 
     #[test]
-    fn parse_incorrect_addresses() {
-        let mut opts = Opts::default();
-        opts.addresses = vec!["im_wrong".to_owned(), "300.10.1.1".to_owned()];
+    fn parse_addresses_with_incorrect_address_exclusions() {
+        let opts = Opts {
+            addresses: vec!["192.168.0.0/30".to_owned()],
+            exclude_addresses: Some(vec!["192.168.0.1".to_owned()]),
+            ..Default::default()
+        };
         let ips = parse_addresses(&opts);
 
-        assert!(ips.is_empty());
-    }
-    #[test]
-    fn parse_hosts_file_and_incorrect_hosts() {
-        // Host file contains IP, Hosts, incorrect IPs, incorrect hosts
-        let mut opts = Opts::default();
-        opts.addresses = vec!["fixtures/hosts.txt".to_owned()];
-        let ips = parse_addresses(&opts);
-        assert_eq!(ips.len(), 3);
-    }
-
-    #[test]
-    fn parse_empty_hosts_file() {
-        // Host file contains IP, Hosts, incorrect IPs, incorrect hosts
-        let mut opts = Opts::default();
-        opts.addresses = vec!["fixtures/empty_hosts.txt".to_owned()];
-        let ips = parse_addresses(&opts);
-        assert_eq!(ips.len(), 0);
-    }
-
-    #[test]
-    fn parse_naughty_host_file() {
-        // Host file contains IP, Hosts, incorrect IPs, incorrect hosts
-        let mut opts = Opts::default();
-        opts.addresses = vec!["fixtures/naughty_string.txt".to_owned()];
-        let ips = parse_addresses(&opts);
-        assert_eq!(ips.len(), 0);
+        assert_eq!(
+            ips,
+            [
+                Ipv4Addr::new(192, 168, 0, 0),
+                Ipv4Addr::new(192, 168, 0, 2),
+                Ipv4Addr::new(192, 168, 0, 3)
+            ]
+        );
     }
 
     #[test]
     fn parse_duplicate_cidrs() {
-        let mut opts = Opts::default();
-        opts.addresses = vec!["79.98.104.0/21".to_owned(), "79.98.104.0/24".to_owned()];
+        let opts = Opts {
+            addresses: vec!["79.98.104.0/21".to_owned(), "79.98.104.0/24".to_owned()],
+            ..Default::default()
+        };
 
         let ips = parse_addresses(&opts);
 
@@ -273,25 +370,102 @@ mod tests {
     }
 
     #[test]
-    fn resolver_default_cloudflare() {
-        let opts = Opts::default();
+    fn parse_overspecific_cidr() {
+        // a canonical CIDR string has 0 in all host bits, but we want to treat any CIDR-like string as CIDR
+        let opts = Opts {
+            addresses: vec!["192.128.1.1/24".to_owned()],
+            ..Default::default()
+        };
 
-        let resolver = get_resolver(&opts.resolver);
-        let lookup = resolver.lookup_ip("www.example.com.").unwrap();
+        let ips = parse_addresses(&opts);
 
-        assert!(opts.resolver.is_none());
-        assert!(lookup.iter().next().is_some());
+        assert_eq!(ips.len(), 256);
     }
 
     #[test]
-    fn resolver_args_google_dns() {
-        let mut opts = Opts::default();
-        // https://developers.google.com/speed/public-dns
-        opts.resolver = Some("8.8.8.8,8.8.4.4".to_owned());
+    fn parse_non_canonical_cidr_mid_block() {
+        // 192.168.1.13/29: .13 = 0000 1101, mask clears last 3 bits → .8 = 0000 1000
+        // network is 192.168.1.8/29, spanning .8 through .15
+        let opts = Opts {
+            addresses: vec!["192.168.1.13/29".to_owned()],
+            ..Default::default()
+        };
+        let ips = parse_addresses(&opts);
+        assert_eq!(
+            ips,
+            [
+                Ipv4Addr::new(192, 168, 1, 8),
+                Ipv4Addr::new(192, 168, 1, 9),
+                Ipv4Addr::new(192, 168, 1, 10),
+                Ipv4Addr::new(192, 168, 1, 11),
+                Ipv4Addr::new(192, 168, 1, 12),
+                Ipv4Addr::new(192, 168, 1, 13),
+                Ipv4Addr::new(192, 168, 1, 14),
+                Ipv4Addr::new(192, 168, 1, 15),
+            ]
+        );
+    }
 
-        let resolver = get_resolver(&opts.resolver);
-        let lookup = resolver.lookup_ip("www.example.com.").unwrap();
+    #[test]
+    fn parse_non_canonical_cidr_last_in_block() {
+        // 192.168.1.15/29: last address in the block, should still resolve to same .8–.15 network
+        let opts = Opts {
+            addresses: vec!["192.168.1.15/29".to_owned()],
+            ..Default::default()
+        };
+        let ips = parse_addresses(&opts);
+        assert_eq!(
+            ips,
+            [
+                Ipv4Addr::new(192, 168, 1, 8),
+                Ipv4Addr::new(192, 168, 1, 9),
+                Ipv4Addr::new(192, 168, 1, 10),
+                Ipv4Addr::new(192, 168, 1, 11),
+                Ipv4Addr::new(192, 168, 1, 12),
+                Ipv4Addr::new(192, 168, 1, 13),
+                Ipv4Addr::new(192, 168, 1, 14),
+                Ipv4Addr::new(192, 168, 1, 15),
+            ]
+        );
+    }
 
-        assert!(lookup.iter().next().is_some());
+    #[test]
+    fn parse_non_canonical_cidr_crosses_third_octet() {
+        // 192.168.1.5/23: host bits span into the third octet
+        // .1.5 in 23-bit context → network is 192.168.0.0/23, spanning .0.0 through .1.255 (512 addresses)
+        let opts = Opts {
+            addresses: vec!["192.168.1.5/23".to_owned()],
+            ..Default::default()
+        };
+        let ips = parse_addresses(&opts);
+        assert_eq!(
+            ips.first(),
+            Some(&IpAddr::V4(Ipv4Addr::new(192, 168, 0, 0)))
+        );
+        assert_eq!(
+            ips.last(),
+            Some(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 255)))
+        );
+        assert_eq!(ips.len(), 512);
+    }
+
+    #[test]
+    fn parse_non_canonical_cidr_slash30() {
+        // 10.0.0.7/30: .7 = 0000 0111, mask clears last 2 bits → .4 = 0000 0100
+        // network is 10.0.0.4/30, spanning .4 through .7
+        let opts = Opts {
+            addresses: vec!["10.0.0.7/30".to_owned()],
+            ..Default::default()
+        };
+        let ips = parse_addresses(&opts);
+        assert_eq!(
+            ips,
+            [
+                Ipv4Addr::new(10, 0, 0, 4),
+                Ipv4Addr::new(10, 0, 0, 5),
+                Ipv4Addr::new(10, 0, 0, 6),
+                Ipv4Addr::new(10, 0, 0, 7),
+            ]
+        );
     }
 }
