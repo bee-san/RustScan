@@ -221,6 +221,11 @@ pub struct Opts {
     /// UDP scanning mode, finds UDP ports that send back responses
     #[arg(long)]
     pub udp: bool,
+
+    /// Also list TCP ports that actively refused the connection (closed).
+    /// Closed ports are only printed; scripts are never run against them.
+    #[arg(long)]
+    pub closed: bool,
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -278,7 +283,7 @@ impl Opts {
 
         merge_required!(
             addresses, greppable, accessible, batch_size, timeout, tries, scan_order, scripts,
-            command, udp, no_banner
+            command, udp, no_banner, closed
         );
     }
 
@@ -325,6 +330,7 @@ impl Default for Opts {
             exclude_ports: None,
             exclude_addresses: None,
             udp: false,
+            closed: false,
         }
     }
 }
@@ -352,6 +358,7 @@ pub struct Config {
     exclude_addresses: Option<Vec<String>>,
     udp: Option<bool>,
     no_banner: Option<bool>,
+    closed: Option<bool>,
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -369,6 +376,7 @@ impl Config {
     /// scan_order = "Serial"
     /// exclude_ports = [8080, 9090, 80]
     /// udp = false
+    /// closed = false
     ///
     pub fn read(custom_config_path: Option<PathBuf>) -> Self {
         let mut content = String::new();
@@ -466,6 +474,7 @@ mod tests {
                 exclude_addresses: None,
                 udp: Some(false),
                 no_banner: None,
+                closed: Some(false),
             }
         }
     }

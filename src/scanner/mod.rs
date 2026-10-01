@@ -62,6 +62,17 @@ pub struct Scanner {
     exclude_ports: Vec<u16>,
     udp: bool,
     print_open_ports: bool,
+    report_closed: bool,
+}
+
+/// The outcome for a single socket, as returned by [`Scanner::run_with_status`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortStatus {
+    /// The TCP connection succeeded, or the UDP target answered.
+    Open(SocketAddr),
+    /// The target actively refused the TCP connection (for example with a
+    /// RST). Only reported when [`Scanner::with_closed_ports`] is enabled.
+    Closed(SocketAddr),
 }
 
 // Allowing too many arguments for clippy.
@@ -89,6 +100,7 @@ impl Scanner {
             exclude_ports,
             udp,
             print_open_ports: false,
+            report_closed: false,
         }
     }
 
@@ -101,10 +113,35 @@ impl Scanner {
         self
     }
 
+    /// Also reports TCP ports that actively refuse the connection, as
+    /// [`PortStatus::Closed`] from [`Self::run_with_status`].
+    ///
+    /// Ports that time out are still treated as filtered and are not reported.
+    /// UDP scans never report closed ports.
+    #[must_use]
+    pub fn with_closed_ports(mut self) -> Self {
+        self.report_closed = true;
+        self
+    }
+
     /// Runs scan_range with chunk sizes
     /// If you want to run RustScan normally, this is the entry point used
-    /// Returns all open ports as `Vec<u16>`
+    /// Returns all open sockets.
     pub async fn run(&self) -> Vec<SocketAddr> {
+        self.run_with_status()
+            .await
+            .into_iter()
+            .filter_map(|status| match status {
+                PortStatus::Open(socket) => Some(socket),
+                PortStatus::Closed(_) => None,
+            })
+            .collect()
+    }
+
+    /// Like [`Self::run`], but returns the status of every socket that gave a
+    /// definitive answer: open sockets, plus closed sockets when
+    /// [`Self::with_closed_ports`] is enabled.
+    pub async fn run_with_status(&self) -> Vec<PortStatus> {
         let ports: Vec<u16> = self
             .port_strategy
             .order()
@@ -113,7 +150,7 @@ impl Scanner {
             .copied()
             .collect();
         let mut socket_iterator: SocketIterator = SocketIterator::new(&self.ips, &ports);
-        let mut open_sockets: Vec<SocketAddr> = Vec::new();
+        let mut found_sockets: Vec<PortStatus> = Vec::new();
         let mut ftrs = FuturesUnordered::new();
         let mut errors: HashSet<String> = HashSet::new();
 
@@ -146,7 +183,7 @@ impl Scanner {
             }
 
             match result {
-                Ok(socket) => open_sockets.push(socket),
+                Ok(status) => found_sockets.push(status),
                 Err(e) => {
                     let error_string = e.to_string();
                     if errors.len() < self.ips.len() * 1000 {
@@ -156,8 +193,8 @@ impl Scanner {
             }
         }
         debug!("Typical socket connection errors {errors:?}");
-        debug!("Open Sockets found: {:?}", open_sockets);
-        open_sockets
+        debug!("Sockets found: {:?}", found_sockets);
+        found_sockets
     }
 
     /// Given a socket, scan it self.tries times.
@@ -178,7 +215,7 @@ impl Scanner {
         &self,
         socket: SocketAddr,
         udp_payloads: Option<Arc<UdpPayloadLookup>>,
-    ) -> io::Result<SocketAddr> {
+    ) -> io::Result<PortStatus> {
         if self.udp {
             return self.scan_udp_socket(socket, udp_payloads).await;
         }
@@ -194,9 +231,16 @@ impl Scanner {
                     self.fmt_ports(socket);
 
                     debug!("Return Ok after {nr_try} tries");
-                    return Ok(socket);
+                    return Ok(PortStatus::Open(socket));
                 }
                 Err(e) => {
+                    // A refused connection is a definitive answer, so there is
+                    // no point in retrying it.
+                    if self.report_closed && e.kind() == io::ErrorKind::ConnectionRefused {
+                        self.fmt_closed_port(socket);
+                        return Ok(PortStatus::Closed(socket));
+                    }
+
                     let mut error_string = e.to_string();
 
                     assert!(!error_string.to_lowercase().contains("too many open files"), "Too many open files. Please reduce batch size. The default is 5000. Try -b 2500.");
@@ -216,7 +260,7 @@ impl Scanner {
         &self,
         socket: SocketAddr,
         udp_payloads: Option<Arc<UdpPayloadLookup>>,
-    ) -> io::Result<SocketAddr> {
+    ) -> io::Result<PortStatus> {
         let payload: &[u8] = udp_payloads
             .as_ref()
             .and_then(|m| m.get(&socket.port()).copied())
@@ -225,7 +269,7 @@ impl Scanner {
         let tries = self.tries.get();
         for _ in 1..=tries {
             match self.udp_scan(socket, payload, self.timeout).await {
-                Ok(true) => return Ok(socket),
+                Ok(true) => return Ok(PortStatus::Open(socket)),
                 Ok(false) => continue,
                 Err(e) => return Err(e),
             }
@@ -342,6 +386,17 @@ impl Scanner {
             }
         }
     }
+
+    /// Prints a closed port (CLI output only, never in greppable mode).
+    fn fmt_closed_port(&self, socket: SocketAddr) {
+        if self.print_open_ports && !self.greppable {
+            if self.accessible {
+                println_safe(format_args!("Closed {socket}"));
+            } else {
+                println_safe(format_args!("Closed {}", socket.to_string().red()));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -381,6 +436,16 @@ mod tests {
         let scanner = test_scanner().with_open_port_output();
 
         assert!(scanner.print_open_ports);
+    }
+
+    #[test]
+    fn closed_ports_are_not_reported_by_default() {
+        assert!(!test_scanner().report_closed);
+    }
+
+    #[test]
+    fn closed_port_reporting_is_opt_in() {
+        assert!(test_scanner().with_closed_ports().report_closed);
     }
 
     /// Regression test for https://github.com/bee-san/RustScan/issues/933:

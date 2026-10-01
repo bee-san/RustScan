@@ -5,7 +5,7 @@
 use rustscan::benchmark::{Benchmark, NamedTimer};
 use rustscan::input::{self, Config, Opts, ScriptsRequired};
 use rustscan::port_strategy::PortStrategy;
-use rustscan::scanner::Scanner;
+use rustscan::scanner::{PortStatus, Scanner};
 use rustscan::scripts::{init_scripts, Script, ScriptFile};
 use rustscan::tui::println_safe;
 use rustscan::{detail, funny_opening, output, warning};
@@ -87,7 +87,7 @@ fn main() {
     let batch_size = effective_batch_size(&opts);
     debug!("Effective batch size: {batch_size}");
 
-    let scanner = Scanner::new(
+    let mut scanner = Scanner::new(
         &ips,
         batch_size,
         Duration::from_millis(opts.timeout.into()),
@@ -99,18 +99,25 @@ fn main() {
         opts.udp,
     )
     .with_open_port_output();
+    if opts.closed {
+        scanner = scanner.with_closed_ports();
+    }
     debug!("Scanner finished building: {scanner:?}");
 
     let mut portscan_bench = NamedTimer::start("Portscan");
-    let scan_result = block_on(scanner.run());
+    let scan_result = block_on(scanner.run_with_status());
     portscan_bench.end();
     benchmarks.push(portscan_bench);
 
     let mut ports_per_ip = HashMap::new();
+    let mut closed_ports_per_ip: HashMap<IpAddr, Vec<u16>> = HashMap::new();
 
-    for socket in scan_result {
-        ports_per_ip
-            .entry(socket.ip())
+    for status in scan_result {
+        let (map, socket) = match status {
+            PortStatus::Open(socket) => (&mut ports_per_ip, socket),
+            PortStatus::Closed(socket) => (&mut closed_ports_per_ip, socket),
+        };
+        map.entry(socket.ip())
             .or_insert_with(Vec::new)
             .push(socket.port());
     }
@@ -184,6 +191,19 @@ fn main() {
                     warning!(&format!("Error {e}"), opts.greppable, opts.accessible);
                 }
             }
+        }
+    }
+
+    // Closed ports are only listed; scripts are never run against them.
+    if opts.closed {
+        println_safe(format_args!("closed ports:"));
+        for (ip, ports) in &closed_ports_per_ip {
+            let ports_str = ports
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            println_safe(format_args!("{ip} -> [{ports_str}]"));
         }
     }
 
