@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::{
     collections::{HashMap, HashSet},
     io,
-    net::{IpAddr, Shutdown, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr},
     num::NonZeroU8,
     sync::Arc,
     time::Duration,
@@ -368,27 +368,17 @@ impl Scanner {
             .unwrap_or_else(|_elapsed| Err(timed_out()))
     }
 
-    /// Binds to a UDP socket so we can send and receive packets
-    /// # Example
-    ///
-    /// ```compile_fail
-    /// # use std::net::{IpAddr, Ipv6Addr, SocketAddr};
-    /// let port: u16 = 80;
-    /// // ip is an IpAddr type
-    /// let ip = IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1));
-    /// let socket = SocketAddr::new(ip, port);
-    /// scanner.udp_bind(socket);
-    /// // returns Result which is either Ok(stream) for port is open, or Err for port is closed.
-    /// // Timeout occurs after self.timeout seconds
-    /// ```
-    ///
-    async fn udp_bind(&self, socket: SocketAddr) -> io::Result<UdpSocket> {
+    /// Binds a non-blocking UDP socket on the unspecified address of the
+    /// target's address family, so we can send and receive packets.
+    fn udp_bind(socket: SocketAddr) -> io::Result<std::net::UdpSocket> {
         let local_addr = match socket {
-            SocketAddr::V4(_) => "0.0.0.0:0".parse::<SocketAddr>().unwrap(),
-            SocketAddr::V6(_) => "[::]:0".parse::<SocketAddr>().unwrap(),
+            SocketAddr::V4(_) => SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
+            SocketAddr::V6(_) => SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)),
         };
 
-        UdpSocket::bind(local_addr).await
+        let udp_socket = std::net::UdpSocket::bind(local_addr)?;
+        udp_socket.set_nonblocking(true)?;
+        Ok(udp_socket)
     }
 
     /// Performs a UDP scan on the specified socket with a payload and wait duration
@@ -412,29 +402,59 @@ impl Scanner {
         payload: &[u8],
         wait: Duration,
     ) -> io::Result<bool> {
-        match self.udp_bind(socket).await {
-            Ok(udp_socket) => {
-                let mut buf = [0u8; 1024];
-
-                udp_socket.connect(socket).await?;
-                udp_socket.send(payload).await?;
-
-                match timeout(wait, udp_socket.recv(&mut buf)).await {
-                    Ok(Ok(size)) => {
-                        debug!("Received {size} bytes");
-                        self.fmt_ports(socket);
-                        Ok(true)
-                    }
-                    Ok(Err(e)) if e.kind() == io::ErrorKind::TimedOut => Ok(false),
-                    Ok(Err(e)) => Err(e),
-                    // Nothing came back in time.
-                    Err(_elapsed) => Ok(false),
-                }
-            }
+        let udp_socket = match Self::udp_bind(socket) {
+            Ok(udp_socket) => udp_socket,
             Err(e) => {
                 debug!("Error binding UDP socket: {e:?}");
-                Err(e)
+                return Err(e);
             }
+        };
+        let mut buf = [0u8; 1024];
+
+        udp_socket.connect(socket)?;
+
+        // Send the probe and try the first receive straight away, as
+        // async-std did. Tokio's readiness-based I/O would first wait for the
+        // reactor to report the socket ready, costing every probe extra trips
+        // through the event loop, while the probe can almost always be sent
+        // immediately and, on the local host, the answer (often an ICMP "port
+        // unreachable", seen as a refused connection) is usually already
+        // there when the send returns. The socket is only registered with
+        // Tokio when we really have to wait.
+        let sent = match udp_socket.send(payload) {
+            Ok(_) => true,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => false,
+            Err(e) => return Err(e),
+        };
+        let early = if sent {
+            udp_socket.recv(&mut buf)
+        } else {
+            Err(io::ErrorKind::WouldBlock.into())
+        };
+
+        let received = match early {
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                let udp_socket = UdpSocket::from_std(udp_socket)?;
+                if !sent {
+                    udp_socket.send(payload).await?;
+                }
+                match timeout(wait, udp_socket.recv(&mut buf)).await {
+                    Ok(received) => received,
+                    // Nothing came back in time.
+                    Err(_elapsed) => return Ok(false),
+                }
+            }
+            early => early,
+        };
+
+        match received {
+            Ok(size) => {
+                debug!("Received {size} bytes");
+                self.fmt_ports(socket);
+                Ok(true)
+            }
+            Err(e) if e.kind() == io::ErrorKind::TimedOut => Ok(false),
+            Err(e) => Err(e),
         }
     }
 
