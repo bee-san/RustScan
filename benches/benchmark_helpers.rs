@@ -1,10 +1,12 @@
 use criterion::{criterion_group, criterion_main, Criterion};
+use futures::{stream::FuturesUnordered, StreamExt};
 use rustscan::generated::get_parsed_data;
 use rustscan::input::{Opts, PortRanges, ScanOrder};
 use rustscan::port_strategy::PortStrategy;
 use rustscan::scanner::build_udp_payload_lookup;
 use std::collections::BTreeMap;
 use std::hint::black_box;
+use std::io;
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -47,7 +49,53 @@ fn old_payload_for_port(udp_map: &'static BTreeMap<Vec<u16>, Vec<u8>>, port: u16
     payload
 }
 
+// Exercise the scanner's bounded scheduling pattern without opening sockets.
+// Ready operations model immediate replies; pending operations expire instead.
+async fn simulated_operation(expires: bool) -> io::Result<()> {
+    tokio::time::timeout(Duration::from_millis(10), async {
+        if expires {
+            std::future::pending::<()>().await;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| io::Error::new(io::ErrorKind::TimedOut, error))?
+}
+
+async fn simulated_batch(expires: bool) {
+    const OPERATIONS: usize = 4096;
+    const BATCH_SIZE: usize = 256;
+    let mut pending = FuturesUnordered::new();
+    for _ in 0..BATCH_SIZE {
+        pending.push(simulated_operation(expires));
+    }
+    let mut remaining = OPERATIONS - BATCH_SIZE;
+    while let Some(result) = pending.next().await {
+        let _ = black_box(result);
+        if remaining > 0 {
+            pending.push(simulated_operation(expires));
+            remaining -= 1;
+        }
+    }
+}
+
 fn criterion_benchmark(c: &mut Criterion) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut runtime_group = c.benchmark_group("runtime scheduling");
+    runtime_group.sample_size(20);
+    runtime_group.warm_up_time(Duration::from_secs(1));
+    runtime_group.measurement_time(Duration::from_secs(5));
+    runtime_group.bench_function("ready operations", |b| {
+        b.iter(|| runtime.block_on(simulated_batch(false)));
+    });
+    runtime_group.bench_function("expired operations", |b| {
+        b.iter(|| runtime.block_on(simulated_batch(true)));
+    });
+    runtime_group.finish();
+
     // Benching helper functions
     c.bench_function("parse address", |b| b.iter(bench_address));
 

@@ -7,10 +7,13 @@
 //! [`Scanner`](crate::scanner::Scanner) which in turn requires a
 //! [`PortStrategy`](crate::port_strategy::PortStrategy):
 //!
+//! Scans require a Tokio runtime with I/O and time enabled. Synchronous address
+//! parsing should run before entering the runtime; see the
+//! [runtime migration guide](https://github.com/bee-san/RustScan/blob/master/docs/tokio-migration.md).
+//!
 //! This example is compiled but never executed by the test suite.
 //!
 //! ```no_run
-//! use async_std::task::block_on;
 //! use std::{net::IpAddr, time::Duration};
 //!
 //! use rustscan::input::{PortRanges, ScanOrder};
@@ -33,7 +36,11 @@
 //!         false, // is this a UDP scan?
 //!     );
 //!
-//!     let scan_result = block_on(scanner.run());
+//!     let runtime = tokio::runtime::Builder::new_current_thread()
+//!         .enable_all()
+//!         .build()
+//!         .unwrap();
+//!     let scan_result = runtime.block_on(scanner.run());
 //!
 //!     println!("{:?}", scan_result);
 //! }

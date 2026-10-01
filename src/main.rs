@@ -11,7 +11,6 @@ use rustscan::tui::println_safe;
 use rustscan::{detail, funny_opening, output, warning};
 
 use colorful::{Color, Colorful};
-use futures::executor::block_on;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::string::ToString;
@@ -108,7 +107,14 @@ fn main() {
     debug!("Scanner finished building: {scanner:?}");
 
     let mut portscan_bench = NamedTimer::start("Portscan");
-    let scan_result = block_on(scanner.run_with_status());
+    // Keep synchronous DNS resolution and script execution outside the runtime.
+    // FuturesUnordered drives the bounded scan concurrently on this thread.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create the Tokio runtime");
+    let scan_result = runtime.block_on(scanner.run_with_status());
+    drop(runtime);
     portscan_bench.end();
     benchmarks.push(portscan_bench);
 
