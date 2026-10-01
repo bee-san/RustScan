@@ -1,4 +1,5 @@
 //! Provides functions to parse input IP addresses, CIDRs or files.
+use std::cell::LazyCell;
 use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{prelude::*, BufReader};
@@ -39,12 +40,23 @@ use crate::warning;
 /// start your runtime (as the `rustscan` binary does) or from
 /// `tokio::task::spawn_blocking`, not directly from async code.
 pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
+    parse_addresses_with_resolver(input, || get_resolver(&input.resolver))
+}
+
+fn parse_addresses_with_resolver(
+    input: &Opts,
+    create_resolver: impl FnOnce() -> Resolver,
+) -> Vec<IpAddr> {
     let mut ips: Vec<IpAddr> = Vec::new();
     let mut unresolved_addresses: Vec<&str> = Vec::new();
-    let backup_resolver = get_resolver(&input.resolver);
+    // Most scans use literal IPs or CIDRs. Defer the resolver's runtime and
+    // hosts-file loading until a DNS fallback actually needs them, then reuse
+    // that resolver for the rest of the targets and exclusions.
+    let backup_resolver = LazyCell::new(create_resolver);
+    let resolver = || &*backup_resolver;
 
     for address in &input.addresses {
-        let parsed_ips = parse_address(address, &backup_resolver);
+        let parsed_ips = parse_address_with_resolver(address, &resolver);
         if !parsed_ips.is_empty() {
             ips.extend(parsed_ips);
         } else {
@@ -66,7 +78,7 @@ pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
             continue;
         }
 
-        if let Ok(x) = read_ips_from_file(file_path, &backup_resolver) {
+        if let Ok(x) = read_ips_from_file(file_path, &resolver) {
             ips.extend(x);
         } else {
             warning!(
@@ -77,7 +89,7 @@ pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
         }
     }
 
-    let excluded_cidrs = parse_excluded_networks(&input.exclude_addresses, &backup_resolver);
+    let excluded_cidrs = parse_excluded_networks_with_resolver(&input.exclude_addresses, &resolver);
 
     // Remove duplicated/excluded IPs.
     let mut seen = BTreeSet::new();
@@ -100,6 +112,13 @@ pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
 /// let ips = parse_address("127.0.0.1", &Resolver::default().unwrap());
 /// ```
 pub fn parse_address(address: &str, resolver: &Resolver) -> Vec<IpAddr> {
+    parse_address_with_resolver(address, &|| resolver)
+}
+
+fn parse_address_with_resolver<'a>(
+    address: &str,
+    resolver: &impl Fn() -> &'a Resolver,
+) -> Vec<IpAddr> {
     if let Ok(addr) = IpAddr::from_str(address) {
         // `address` is an IP string
         vec![addr]
@@ -118,14 +137,17 @@ pub fn parse_address(address: &str, resolver: &Resolver) -> Vec<IpAddr> {
 }
 
 /// Uses DNS to get the IPS associated with host
-fn resolve_ips_from_host(source: &str, backup_resolver: &Resolver) -> Vec<IpAddr> {
+fn resolve_ips_from_host<'a>(
+    source: &str,
+    backup_resolver: &impl Fn() -> &'a Resolver,
+) -> Vec<IpAddr> {
     let mut ips: Vec<IpAddr> = Vec::new();
 
     if let Ok(addrs) = source.to_socket_addrs() {
         for ip in addrs {
             ips.push(ip.ip());
         }
-    } else if let Ok(addrs) = backup_resolver.lookup_ip(source) {
+    } else if let Ok(addrs) = backup_resolver().lookup_ip(source) {
         ips.extend(addrs.iter());
     }
 
@@ -149,6 +171,13 @@ pub fn parse_excluded_networks(
     exclude_addresses: &Option<Vec<String>>,
     resolver: &Resolver,
 ) -> Vec<IpCidr> {
+    parse_excluded_networks_with_resolver(exclude_addresses, &|| resolver)
+}
+
+fn parse_excluded_networks_with_resolver<'a>(
+    exclude_addresses: &Option<Vec<String>>,
+    resolver: &impl Fn() -> &'a Resolver,
+) -> Vec<IpCidr> {
     exclude_addresses
         .iter()
         .flatten()
@@ -157,7 +186,10 @@ pub fn parse_excluded_networks(
 }
 
 /// Parses a single address into an IpCidr, handling CIDR notation, IP addresses, and hostnames.
-fn parse_single_excluded_address(addr: &str, resolver: &Resolver) -> Vec<IpCidr> {
+fn parse_single_excluded_address<'a>(
+    addr: &str,
+    resolver: &impl Fn() -> &'a Resolver,
+) -> Vec<IpCidr> {
     if let Ok(cidr) = IpCidr::from_str(addr) {
         return vec![cidr];
     }
@@ -261,9 +293,9 @@ fn read_resolver_from_file(path: &str) -> Result<Vec<IpAddr>, std::io::Error> {
 
 #[cfg(not(tarpaulin_include))]
 /// Parses an input file of IPs and uses those
-fn read_ips_from_file(
+fn read_ips_from_file<'a>(
     ips: &std::path::Path,
-    backup_resolver: &Resolver,
+    backup_resolver: &impl Fn() -> &'a Resolver,
 ) -> Result<Vec<IpAddr>, std::io::Error> {
     let file = File::open(ips)?;
     let reader = BufReader::new(file);
@@ -272,7 +304,7 @@ fn read_ips_from_file(
 
     for address_line in reader.lines() {
         if let Ok(address) = address_line {
-            ips.extend(parse_address(&address, backup_resolver));
+            ips.extend(parse_address_with_resolver(&address, backup_resolver));
         } else {
             debug!("Line in file is not valid");
         }
@@ -283,8 +315,47 @@ fn read_ips_from_file(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_addresses, Opts};
+    use super::{parse_addresses, parse_addresses_with_resolver, Opts};
     use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn literal_targets_and_exclusions_do_not_initialize_a_resolver() {
+        let opts = Opts {
+            addresses: vec![
+                "192.0.2.0/30".to_owned(),
+                "192.0.2.2".to_owned(),
+                "2001:db8::/126".to_owned(),
+                "2001:db8::3".to_owned(),
+            ],
+            exclude_addresses: Some(vec![
+                "192.0.2.0/31".to_owned(),
+                "192.0.2.3".to_owned(),
+                "2001:db8::/127".to_owned(),
+                "2001:db8::3".to_owned(),
+            ]),
+            ..Default::default()
+        };
+
+        let ips = parse_addresses_with_resolver(&opts, || {
+            panic!("literal targets and exclusions must not initialize DNS")
+        });
+
+        assert_eq!(
+            ips,
+            [
+                "192.0.2.2".parse::<IpAddr>().unwrap(),
+                "2001:db8::2".parse::<IpAddr>().unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_targets_do_not_initialize_a_resolver() {
+        assert!(parse_addresses_with_resolver(&Opts::default(), || {
+            panic!("empty targets must not initialize DNS")
+        })
+        .is_empty());
+    }
 
     #[test]
     fn parse_correct_addresses() {
