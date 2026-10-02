@@ -1,7 +1,7 @@
 # Port exclusion preparation benchmark
 
 Compared Tokio master `b7119f7f3eb1601e81126ef3572699ed7b3b7c0b` with
-implementation `209299ce8a17401f340d061792cca21965cf6e0c` on 2026-10-02.
+implementation `270561d553688acbd99f61c460cdfa7c76c1423e` on 2026-10-02.
 
 ## Method
 
@@ -49,18 +49,18 @@ Times are microseconds; A and B are separate matched repetitions.
 
 | Ports | Exclusions | Master µs A / B | Optimized µs A / B | Time saved A / B |
 | ---: | ---: | ---: | ---: | ---: |
-| 1 | 1 | 0.273 / 0.329 | 0.265 / 0.253 | 2.9% / 23.0% |
-| 16 | 4 | 0.374 / 0.408 | 0.325 / 0.325 | 13.0% / 20.2% |
-| 64 | 1 | 0.644 / 0.416 | 0.319 / 0.226 | 50.4% / 45.8% |
-| 64 | 4,096 | 6.083 / 6.175 | 2.439 / 2.468 | 59.9% / 60.0% |
-| 4,096 | 0 | 8.026 / 8.107 | 0.242 / 0.233 | 97.0% / 97.1% |
-| 4,096 | 64 | 14.605 / 20.223 | 2.072 / 3.023 | 85.8% / 85.1% |
-| 4,096 | 4,096 | 587.432 / 541.722 | 5.615 / 5.875 | 99.0% / 98.9% |
-| 65,535 | 0 | 170.424 / 165.198 | 3.880 / 3.707 | 97.7% / 97.8% |
-| 65,535 | 4 | 249.493 / 255.563 | 39.227 / 42.499 | 84.3% / 83.4% |
-| 65,535 | 64 | 244.115 / 203.029 | 28.939 / 29.779 | 88.1% / 85.3% |
-| 65,535 | 1,024 | 1996.094 / 1997.401 | 30.588 / 31.003 | 98.5% / 98.4% |
-| 65,535 | 4,096 | 6309.348 / 6313.109 | 32.724 / 32.774 | 99.5% / 99.5% |
+| 1 | 1 | 0.289 / 0.286 | 0.261 / 0.271 | 9.7% / 5.2% |
+| 16 | 4 | 0.260 / 0.268 | 0.232 / 0.237 | 10.6% / 11.6% |
+| 64 | 1 | 0.433 / 0.437 | 0.237 / 0.239 | 45.2% / 45.4% |
+| 64 | 4,096 | 6.231 / 10.093 | 2.484 / 3.038 | 60.1% / 69.9% |
+| 4,096 | 0 | 10.889 / 10.037 | 0.335 / 0.397 | 96.9% / 96.0% |
+| 4,096 | 64 | 20.680 / 20.363 | 2.930 / 3.064 | 85.8% / 85.0% |
+| 4,096 | 4,096 | 524.223 / 519.670 | 6.805 / 6.710 | 98.7% / 98.7% |
+| 65,535 | 0 | 166.113 / 115.686 | 3.655 / 2.333 | 97.8% / 98.0% |
+| 65,535 | 4 | 175.717 / 181.343 | 29.769 / 30.230 | 83.1% / 83.3% |
+| 65,535 | 64 | 207.617 / 206.910 | 31.595 / 31.462 | 84.8% / 84.8% |
+| 65,535 | 1,024 | 2018.463 / 3271.564 | 33.403 / 33.520 | 98.3% / 99.0% |
+| 65,535 | 4,096 | 8811.234 / 8469.706 | 59.853 / 63.211 | 99.3% / 99.3% |
 
 All twelve cases improved in both repetitions. This measures **preparation,
 not end-to-end network scan speed**: many scans are dominated by socket I/O,
@@ -75,6 +75,9 @@ setup and a second allocation. Larger lists use an 8 KiB bitmap covering
 all 65,536 values representable by `u16`, then retain ports in place. This
 changes the large-list filtering cost from ports × exclusions to ports +
 exclusions, while preserving order, duplicate ports and boundary values.
+The helper is kept out of line: release assembly showed an inlined bitmap
+reserved 8,424 bytes in every async poll, whereas the final poll frame uses
+344 bytes and the helper reserves its bitmap only during preparation.
 
 Exploration found that in-place linear membership slows large cases. A
 first production candidate also slowed 64 ports with 4,096 exclusions;
@@ -92,3 +95,20 @@ count for throughput.
 
 [Raw Criterion samples, confidence intervals, revisions and binary hashes](port-exclusion-benchmark-results.json)
 are included. Hosted correctness/performance results are linked in the PR.
+
+## macOS runner setup
+
+Repeated hosted sweeps on Darwin 25.6 returned `ENOBUFS` (error 55) on
+both master and the candidate, missing fixture listeners. Such runs are
+invalid for performance claims. The workflow provisions the TCP memory
+budget once before either build is measured, raising it from the default
+1/32 to 1/8 of physical memory when necessary, and prints the actual limit
+and allocation counters. It retains every scenario, repeat, listener
+comparison and performance threshold. An immediate untimed diagnostic
+scan records errors and kernel counters if a measured pair misses a
+listener; that failed dataset is not used to claim a speedup.
+
+This uses XNU's [TCP budget initialization](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/netinet/tcp_subr.c)
+and [memory accounting interface](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/mem_acct_private.h).
+It changes the disposable benchmark environment, not RustScan's behavior
+or the operating system configuration on users' machines.

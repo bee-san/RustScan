@@ -559,6 +559,8 @@ def ephemeral_range() -> tuple[int, int] | None:
 
 def diagnose_tcp(binary: str, scenario: Scenario, listeners: dict) -> dict:
     """Untimed failure capture on a disposable macOS runner, using debug logs."""
+    from macos_tcp_memory import tcp_memory
+
     def states() -> dict[str, int]:
         snapshot = subprocess.run(
             ["netstat", "-an", "-p", "tcp"], capture_output=True, text=True, check=True
@@ -571,6 +573,7 @@ def diagnose_tcp(binary: str, scenario: Scenario, listeners: dict) -> dict:
         return counts
 
     before = states()
+    memory_before = tcp_memory()
     probe = subprocess.run(
         [binary, *scenario.args(), "--scripts", "none", "--accessible", "--no-banner", "--no-config"],
         env=dict(os.environ, RUST_LOG="rustscan=info,rustscan::scanner=debug"),
@@ -582,6 +585,7 @@ def diagnose_tcp(binary: str, scenario: Scenario, listeners: dict) -> dict:
     }
     return {
         "before": before, "after": states(),
+        "memory_before": memory_before, "memory_after": tcp_memory(),
         "missing": sorted(scenario.expected(listeners) - opened),
         "errors": [line for line in probe.stderr.splitlines()
                    if "Typical socket connection errors" in line],
