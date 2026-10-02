@@ -11,7 +11,6 @@ use rustscan::tui::println_safe;
 use rustscan::{detail, funny_opening, output, warning};
 
 use colorful::{Color, Colorful};
-use futures::executor::block_on;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::string::ToString;
@@ -108,7 +107,13 @@ fn main() {
     debug!("Scanner finished building: {scanner:?}");
 
     let mut portscan_bench = NamedTimer::start("Portscan");
-    let scan_result = block_on(scanner.run_with_status());
+    let scan_result = match run_scan(&scanner) {
+        Ok(scan_result) => scan_result,
+        Err(e) => {
+            eprintln!("error: could not start the scan: {e}");
+            std::process::exit(1);
+        }
+    };
     portscan_bench.end();
     benchmarks.push(portscan_bench);
 
@@ -234,6 +239,25 @@ fn effective_batch_size(opts: &Opts) -> usize {
     {
         opts.batch_size
     }
+}
+
+/// Runs the scan to completion on a current-thread Tokio runtime.
+///
+/// The scanner drives every socket from a single future and never spawns
+/// tasks, so one thread is all it can use: a current-thread runtime runs the
+/// scan, the I/O driver and the timers on the calling thread, without the
+/// worker threads and cross-thread wake-ups of a multi-threaded runtime.
+///
+/// The runtime only exists for the duration of the scan. Address resolution
+/// (blocking DNS lookups and file reads) happens before it is created, so it
+/// can never stall the scan, and scripts run after it is gone.
+fn run_scan(scanner: &Scanner) -> std::io::Result<Vec<PortStatus>> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()?;
+
+    Ok(runtime.block_on(scanner.run_with_status()))
 }
 
 /// Prints the opening title of RustScan

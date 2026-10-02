@@ -19,8 +19,11 @@ exclude = [
 [dependencies]
 clap = { version = "4.6.1", features = ["derive", "wrap_help"] }
 colored = "3.1.1"
-async-std = "1.13.2"
-futures = "0.3"
+# Async runtime for the scanner. hickory-resolver already depends on tokio, so
+# this adds no crates; only the features the scanner itself uses are listed.
+tokio = { version = "1.44.2", features = ["rt", "net", "time"] }
+# Only `FuturesUnordered`/`StreamExt` are used; the executor is not needed.
+futures = { version = "0.3", default-features = false, features = ["std"] }
 rlimit = "0.11.0"
 log = "0.4.32"
 env_logger = "0.11.10"

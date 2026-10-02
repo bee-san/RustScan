@@ -7,20 +7,30 @@ use log::debug;
 mod socket_iterator;
 use socket_iterator::SocketIterator;
 
-use async_std::net::TcpStream;
-use async_std::prelude::*;
-use async_std::task::sleep;
-use async_std::{io, net::UdpSocket};
 use colored::Colorize;
-use futures::stream::FuturesUnordered;
+use futures::stream::{FuturesUnordered, StreamExt};
 use std::collections::BTreeMap;
+use std::future::poll_fn;
+use std::task::Poll;
 use std::{
     collections::{HashMap, HashSet},
-    net::{IpAddr, Shutdown, SocketAddr},
+    io,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr},
     num::NonZeroU8,
     sync::Arc,
     time::Duration,
 };
+use tokio::io::Interest;
+use tokio::net::{TcpStream, UdpSocket};
+use tokio::time::{sleep, timeout};
+
+/// How many sockets the scan starts or finishes (counted together) between
+/// two polls of the runtime's I/O driver; see `Scanner::scan_sockets`.
+///
+/// Every round ends with a non-blocking poll of the OS selector, so this
+/// keeps the overhead far below 1% while bounding the time between two
+/// polls to about a millisecond on Linux.
+const WORK_PER_TURN: usize = 128;
 
 /// UDP payload lookup: port -> payload bytes
 ///
@@ -50,6 +60,19 @@ pub fn build_udp_payload_lookup(udp_map: &'static BTreeMap<Vec<u16>, Vec<u8>>) -
 /// batch_size is how many ports at a time should be scanned
 /// Timeout is the time RustScan should wait before declaring a port closed. As datatype Duration.
 /// greppable is whether or not RustScan should print things, or wait until the end to print only the ip and open ports.
+///
+/// # Runtime
+///
+/// The futures returned by [`Scanner::run`] and [`Scanner::run_with_status`]
+/// use Tokio sockets and timers, so they must be polled from within a
+/// [Tokio](https://docs.rs/tokio) runtime that has both the I/O and the time
+/// drivers enabled (for example `#[tokio::main]`, or a runtime built with
+/// `enable_all()`). Polling them from another executor panics.
+///
+/// The scan never spawns tasks: every socket is driven from the one future
+/// you await, so a current-thread runtime is enough (it is what the
+/// `rustscan` binary uses), and the future is `Send` if you prefer to spawn
+/// it on a multi-threaded runtime.
 #[cfg(not(tarpaulin_include))]
 #[derive(Debug)]
 pub struct Scanner {
@@ -157,6 +180,16 @@ impl Scanner {
     /// definitive answer: open sockets, plus closed sockets when
     /// [`Self::with_closed_ports`] is enabled.
     pub async fn run_with_status(&self) -> Vec<PortStatus> {
+        // Every in-flight socket is polled from this single future through a
+        // `FuturesUnordered`. Under Tokio's cooperative budget the future
+        // would be forced to yield after ~128 sockets made progress, and the
+        // `FuturesUnordered` would then re-poll every other ready socket just
+        // to have it return `Pending` again. Opt out; `scan_sockets` yields to
+        // the runtime by itself, in rounds of `WORK_PER_TURN` sockets.
+        tokio::task::unconstrained(self.scan()).await
+    }
+
+    async fn scan(&self) -> Vec<PortStatus> {
         let ports: Vec<u16> = self
             .port_strategy
             .order()
@@ -207,6 +240,15 @@ impl Scanner {
 
     /// Scans every socket yielded by `sockets`, keeping at most `batch_size`
     /// connection attempts in flight.
+    ///
+    /// Starts sockets and handles finished ones in rounds of at most
+    /// [`WORK_PER_TURN`] of either, and lets the runtime poll for I/O and fire
+    /// timers between rounds. One poll of the scan future otherwise lasts
+    /// until no socket is ready, which can take long: starting a whole large
+    /// batch at once, or a run of UDP probes that all finish straight away.
+    /// Sockets that finish in the meantime are only noticed once the poll
+    /// ends, so their results come late, and if the poll outlasts the timeout
+    /// their timers fire before their answers are seen.
     async fn scan_sockets(
         &self,
         mut sockets: SocketIterator<'_>,
@@ -216,26 +258,58 @@ impl Scanner {
     ) {
         let mut ftrs = FuturesUnordered::new();
 
-        for _ in 0..self.batch_size {
-            if let Some(socket) = sockets.next() {
-                ftrs.push(self.scan_socket(socket, udp_payloads.clone()));
+        loop {
+            let mut work = 0;
+            while work < WORK_PER_TURN {
+                let mut started = false;
+                if ftrs.len() < self.batch_size {
+                    if let Some(socket) = sockets.next() {
+                        ftrs.push(self.scan_socket(socket, udp_payloads.clone()));
+                        started = true;
+                        work += 1;
+                    }
+                }
+
+                // Poll once without waiting; this starts the new socket.
+                match poll_fn(|cx| Poll::Ready(ftrs.poll_next_unpin(cx))).await {
+                    Poll::Ready(Some(result)) => {
+                        self.record(result, found_sockets, errors);
+                        work += 1;
+                    }
+                    // Nothing in flight and nothing left to start.
+                    Poll::Ready(None) => return,
+                    // Nothing has finished; keep starting sockets while there is room.
+                    Poll::Pending if started => {}
+                    Poll::Pending => break,
+                }
+            }
+
+            if work >= WORK_PER_TURN {
+                tokio::task::yield_now().await;
             } else {
-                break;
+                // The batch is full (or complete) and every socket in it is
+                // waiting on the network.
+                match ftrs.next().await {
+                    Some(result) => self.record(result, found_sockets, errors),
+                    None => return,
+                }
             }
         }
+    }
 
-        while let Some(result) = ftrs.next().await {
-            if let Some(socket) = sockets.next() {
-                ftrs.push(self.scan_socket(socket, udp_payloads.clone()));
-            }
-
-            match result {
-                Ok(status) => found_sockets.push(status),
-                Err(e) => {
-                    let error_string = e.to_string();
-                    if errors.len() < self.ips.len() * 1000 {
-                        errors.insert(error_string);
-                    }
+    /// Records the outcome of one socket.
+    fn record(
+        &self,
+        result: io::Result<PortStatus>,
+        found_sockets: &mut Vec<PortStatus>,
+        errors: &mut HashSet<String>,
+    ) {
+        match result {
+            Ok(status) => found_sockets.push(status),
+            Err(e) => {
+                let error_string = e.to_string();
+                if errors.len() < self.ips.len() * 1000 {
+                    errors.insert(error_string);
                 }
             }
         }
@@ -269,7 +343,7 @@ impl Scanner {
             match self.connect(socket).await {
                 Ok(tcp_stream) => {
                     debug!("Connection was successful, shutting down stream {}", socket);
-                    if let Err(e) = tcp_stream.shutdown(Shutdown::Both) {
+                    if let Err(e) = shutdown_both(tcp_stream) {
                         debug!("Shutdown stream error {}", e);
                     }
                     self.fmt_ports(socket);
@@ -339,35 +413,22 @@ impl Scanner {
     /// ```
     ///
     async fn connect(&self, socket: SocketAddr) -> io::Result<TcpStream> {
-        let stream = io::timeout(
-            self.timeout,
-            async move { TcpStream::connect(socket).await },
-        )
-        .await?;
-        Ok(stream)
+        timeout(self.timeout, TcpStream::connect(socket))
+            .await
+            .unwrap_or_else(|_elapsed| Err(timed_out()))
     }
 
-    /// Binds to a UDP socket so we can send and receive packets
-    /// # Example
-    ///
-    /// ```compile_fail
-    /// # use std::net::{IpAddr, Ipv6Addr, SocketAddr};
-    /// let port: u16 = 80;
-    /// // ip is an IpAddr type
-    /// let ip = IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1));
-    /// let socket = SocketAddr::new(ip, port);
-    /// scanner.udp_bind(socket);
-    /// // returns Result which is either Ok(stream) for port is open, or Err for port is closed.
-    /// // Timeout occurs after self.timeout seconds
-    /// ```
-    ///
-    async fn udp_bind(&self, socket: SocketAddr) -> io::Result<UdpSocket> {
+    /// Binds a non-blocking UDP socket on the unspecified address of the
+    /// target's address family, so we can send and receive packets.
+    fn udp_bind(socket: SocketAddr) -> io::Result<std::net::UdpSocket> {
         let local_addr = match socket {
-            SocketAddr::V4(_) => "0.0.0.0:0".parse::<SocketAddr>().unwrap(),
-            SocketAddr::V6(_) => "[::]:0".parse::<SocketAddr>().unwrap(),
+            SocketAddr::V4(_) => SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
+            SocketAddr::V6(_) => SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)),
         };
 
-        UdpSocket::bind(local_addr).await
+        let udp_socket = std::net::UdpSocket::bind(local_addr)?;
+        udp_socket.set_nonblocking(true)?;
+        Ok(udp_socket)
     }
 
     /// Performs a UDP scan on the specified socket with a payload and wait duration
@@ -391,32 +452,59 @@ impl Scanner {
         payload: &[u8],
         wait: Duration,
     ) -> io::Result<bool> {
-        match self.udp_bind(socket).await {
-            Ok(udp_socket) => {
-                let mut buf = [0u8; 1024];
-
-                udp_socket.connect(socket).await?;
-                udp_socket.send(payload).await?;
-
-                match io::timeout(wait, udp_socket.recv(&mut buf)).await {
-                    Ok(size) => {
-                        debug!("Received {size} bytes");
-                        self.fmt_ports(socket);
-                        Ok(true)
-                    }
-                    Err(e) => {
-                        if e.kind() == io::ErrorKind::TimedOut {
-                            Ok(false)
-                        } else {
-                            Err(e)
-                        }
-                    }
-                }
-            }
+        let udp_socket = match Self::udp_bind(socket) {
+            Ok(udp_socket) => udp_socket,
             Err(e) => {
                 debug!("Error binding UDP socket: {e:?}");
-                Err(e)
+                return Err(e);
             }
+        };
+        let mut buf = [0u8; 1024];
+
+        udp_socket.connect(socket)?;
+
+        // Send the probe and try the first receive straight away, as
+        // async-std did. Tokio's readiness-based I/O would first wait for the
+        // reactor to report the socket ready, costing every probe extra trips
+        // through the event loop, while the probe can almost always be sent
+        // immediately and, on the local host, the answer (often an ICMP "port
+        // unreachable", seen as a refused connection) is usually already
+        // there when the send returns. The socket is only registered with
+        // Tokio when we really have to wait.
+        let sent = match udp_socket.send(payload) {
+            Ok(_) => true,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => false,
+            Err(e) => return Err(e),
+        };
+        let early = if sent {
+            udp_socket.recv(&mut buf)
+        } else {
+            Err(io::ErrorKind::WouldBlock.into())
+        };
+
+        let received = match early {
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                let udp_socket = UdpSocket::from_std(udp_socket)?;
+                if !sent {
+                    udp_socket.send(payload).await?;
+                }
+                match timeout(wait, recv_or_error(&udp_socket, &mut buf)).await {
+                    Ok(received) => received,
+                    // Nothing came back in time.
+                    Err(_elapsed) => return Ok(false),
+                }
+            }
+            early => early,
+        };
+
+        match received {
+            Ok(size) => {
+                debug!("Received {size} bytes");
+                self.fmt_ports(socket);
+                Ok(true)
+            }
+            Err(e) if e.kind() == io::ErrorKind::TimedOut => Ok(false),
+            Err(e) => Err(e),
         }
     }
 
@@ -443,14 +531,68 @@ impl Scanner {
     }
 }
 
+/// Shuts down both halves of a connected stream before it is closed, as the
+/// async-std implementation did (`TcpStream::shutdown(Shutdown::Both)`).
+///
+/// Tokio only offers an asynchronous write-side shutdown, so take the socket
+/// back from the reactor and shut it down synchronously instead.
+fn shutdown_both(stream: TcpStream) -> io::Result<()> {
+    stream.into_std()?.shutdown(Shutdown::Both)
+}
+
+/// Waits for a datagram on a connected UDP socket, or for the error the
+/// system queued for it: an ICMP "port unreachable" is reported as a refused
+/// connection, which is how closed UDP ports are told apart from filtered
+/// ones.
+///
+/// `UdpSocket::recv` alone does not do this on Linux: a queued ICMP error
+/// only raises `EPOLLERR`, which Tokio does not count as readable, so `recv`
+/// would sleep until the timeout. async-io treated `EPOLLERR` as readable.
+async fn recv_or_error(socket: &UdpSocket, buf: &mut [u8]) -> io::Result<usize> {
+    loop {
+        let ready = socket.ready(Interest::READABLE | Interest::ERROR).await?;
+
+        if ready.is_readable() {
+            match socket.try_recv(buf) {
+                // A spurious wake-up; wait again (unless the socket is closed
+                // for reading, which would wake us up forever).
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock && !ready.is_read_closed() => {}
+                received => return received,
+            }
+        }
+
+        if ready.is_error() {
+            // Take (and clear) the queued error. `WouldBlock` when there is
+            // none makes Tokio clear the error readiness, so this cannot spin.
+            let queued = socket.try_io(Interest::ERROR, || {
+                socket
+                    .take_error()?
+                    .map_or_else(|| Err(io::ErrorKind::WouldBlock.into()), Ok)
+            });
+            match queued {
+                Ok(error) => return Err(error),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
+
+/// The error reported for a connection attempt that hit the timeout; the same
+/// kind and message async-std's `io::timeout` used.
+fn timed_out() -> io::Error {
+    io::Error::new(io::ErrorKind::TimedOut, "future timed out")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use crate::input::{PortRanges, ScanOrder};
 
-    // These tests never open sockets: they only build a `Scanner` or inspect
-    // the payload table generated by build.rs.
+    // These tests never open sockets: they only build a `Scanner` (and its
+    // futures), run a scan that has no socket to scan, or inspect the payload
+    // table generated by build.rs.
 
     fn test_scanner() -> Scanner {
         let addrs = vec!["127.0.0.1".parse::<IpAddr>().unwrap()];
@@ -502,6 +644,55 @@ mod tests {
         let scanner = test_scanner().with_interval(Duration::from_millis(250));
 
         assert_eq!(scanner.interval, Duration::from_millis(250));
+    }
+
+    /// Embedders may spawn the scan on a multi-threaded runtime, which needs
+    /// `Send` futures. The futures are only created here, never polled, so
+    /// no socket is opened.
+    #[test]
+    fn scan_futures_are_send() {
+        fn assert_send<T: Send>(_: &T) {}
+
+        let scanner = test_scanner();
+        assert_send(&scanner.run());
+        assert_send(&scanner.run_with_status());
+    }
+
+    /// Drives a scan on the same kind of runtime the CLI builds. Every port
+    /// is excluded, so the scan has no socket to open and returns at once.
+    #[test]
+    fn scan_without_sockets_completes_on_a_current_thread_runtime() {
+        let addrs = vec!["127.0.0.1".parse::<IpAddr>().unwrap()];
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        for interval in [Duration::ZERO, Duration::from_millis(10)] {
+            let scanner = Scanner::new(
+                &addrs,
+                10,
+                Duration::from_millis(100),
+                1,
+                true,
+                PortStrategy::Manual(vec![1, 2]),
+                true,
+                vec![1, 2],
+                false,
+            )
+            .with_interval(interval);
+
+            assert!(runtime.block_on(scanner.run_with_status()).is_empty());
+        }
+    }
+
+    #[test]
+    fn timeouts_are_reported_as_timed_out_errors() {
+        let error = timed_out();
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(error.to_string(), "future timed out");
     }
 
     /// Regression test for https://github.com/bee-san/RustScan/issues/933:
