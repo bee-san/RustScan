@@ -1,7 +1,7 @@
 # Lazy DNS initialization benchmark
 
-Compared current Tokio master `b7119f7f3eb1601e81126ef3572699ed7b3b7c0b` with the lazy-resolver implementation
-at `bd5571f5d8c0934cb900a10dd15cd200810184fa` on 2026-10-02.
+Compared current Tokio master `67c08a33100362c54b56fde784b0fd234f70fa11` with the lazy-resolver implementation
+at `a05592a8a88b77ad85d961137943dfadfe98b612` on 2026-10-02.
 
 ## Method
 
@@ -30,8 +30,8 @@ The literal case adds `-a 127.0.0.1`. The mixed case adds
 
 | Workload | Master median | Lazy DNS median | Time saved |
 | --- | ---: | ---: | ---: |
-| Literal IPv4 | 163.94 ms | 2.51 ms | 161.43 ms (98.47%) |
-| IPv4/IPv6 CIDRs and exclusions | 156.42 ms | 2.83 ms | 153.59 ms (98.19%) |
+| Literal IPv4 | 168.23 ms | 2.25 ms | 165.98 ms (98.66%) |
+| IPv4/IPv6 CIDRs and exclusions | 178.09 ms | 2.45 ms | 175.63 ms (98.62%) |
 
 All 88 invocations exited successfully with the expected empty scan output.
 A separate syscall trace of the optimized literal-IP invocation recorded no
