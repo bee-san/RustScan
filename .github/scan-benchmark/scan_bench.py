@@ -142,11 +142,13 @@ class Scenario:
     timeout_ms: int = 1500
     udp: bool = False
     repeat: int = 1  # extra samples for very short scenarios
+    excluded_ports: tuple[int, ...] = ()
 
     @property
     def sockets(self) -> int:
         span = sum(end - start + 1 for start, end in self.ranges)
-        return len(self.addresses) * (len(self.ports) + span)
+        excluded = sum(self.covers(port) for port in set(self.excluded_ports))
+        return len(self.addresses) * (len(self.ports) + span - excluded)
 
     def covers(self, port: int) -> bool:
         return port in self.ports or any(s <= port <= e for s, e in self.ranges)
@@ -160,6 +162,8 @@ class Scenario:
         args += ["-b", str(self.batch), "-t", str(self.timeout_ms)]
         if self.udp:
             args.append("--udp")
+        if self.excluded_ports:
+            args += ["--exclude-ports", ",".join(map(str, self.excluded_ports))]
         return args
 
     def expected(self, listeners: dict) -> set[str]:
@@ -168,7 +172,7 @@ class Scenario:
             f"{address}:{port}"
             for address in self.addresses
             for port in by_address.get(address, [])
-            if self.covers(port)
+            if self.covers(port) and port not in self.excluded_ports
         }
 
     def describe(self) -> str:
@@ -193,6 +197,13 @@ def build_scenarios(
     scenarios = [
         Scenario("tcp-1-port", "TCP, 1 open port", lo, ports=(TCP_PORTS[0],), repeat=3),
         Scenario("tcp-sweep", f"TCP, {ports(sweep)}, default batch", lo, sweep),
+        Scenario(
+            "tcp-sweep-excluded",
+            f"TCP, {ports(sweep)}, 1,024 excluded ports",
+            lo,
+            sweep,
+            excluded_ports=tuple(range(1024, 2048)),
+        ),
         Scenario(
             "tcp-sweep-b500", f"TCP, {ports(small_sweep)}, small batch", lo, small_sweep, batch=500
         ),
