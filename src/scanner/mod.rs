@@ -38,14 +38,10 @@ fn filter_excluded_ports(mut ports: Vec<u16>, excluded: &[u16]) -> Vec<u16> {
         return ports;
     }
 
-    // Bitmap setup costs more than membership checks on short lists or when
-    // there are more exclusions than candidate ports. Keep that path unchanged.
-    if ports.len() < 64 || excluded.len() > ports.len() {
-        return ports
-            .iter()
-            .filter(|port| !excluded.contains(port))
-            .copied()
-            .collect();
+    // Bitmap setup costs more than membership checks on short port lists.
+    if ports.len() < 64 {
+        ports.retain(|port| !excluded.contains(port));
+        return ports;
     }
 
     // The complete u16 port space fits in an 8 KiB bitmap.
