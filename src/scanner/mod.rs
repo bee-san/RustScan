@@ -611,6 +611,35 @@ mod tests {
     }
 
     #[test]
+    fn port_exclusions_preserve_order_duplicates_and_boundaries() {
+        let inputs = [
+            Vec::new(),
+            vec![65535, 0, 80, 443, 80, 65535, 1],
+            (0..=65535).collect(),
+            PortStrategy::pick(&Some(PortRanges(vec![(0, 1023)])), None, ScanOrder::Random).order(),
+        ];
+        let exclusions = [
+            Vec::new(),
+            vec![0],
+            vec![0, 65535, 0, 443],
+            (0..1024).collect(),
+            (0..=65535).collect(),
+        ];
+
+        for ports in inputs {
+            for excluded in &exclusions {
+                let excluded_set: HashSet<_> = excluded.iter().copied().collect();
+                let expected: Vec<u16> = ports
+                    .iter()
+                    .filter(|&port| !excluded_set.contains(port))
+                    .copied()
+                    .collect();
+                assert_eq!(filter_excluded_ports(ports.clone(), excluded), expected);
+            }
+        }
+    }
+
+    #[test]
     fn library_scanner_is_quiet_by_default() {
         let scanner = test_scanner();
 
