@@ -557,6 +557,37 @@ def ephemeral_range() -> tuple[int, int] | None:
     return (49152, 65535) if system == "Windows" else None
 
 
+def diagnose_tcp(binary: str, scenario: Scenario, listeners: dict) -> dict:
+    """Untimed failure capture on a disposable macOS runner, using debug logs."""
+    def states() -> dict[str, int]:
+        snapshot = subprocess.run(
+            ["netstat", "-an", "-p", "tcp"], capture_output=True, text=True, check=True
+        )
+        counts: dict[str, int] = {}
+        for line in snapshot.stdout.splitlines():
+            if line.startswith("tcp"):
+                state = line.split()[-1]
+                counts[state] = counts.get(state, 0) + 1
+        return counts
+
+    before = states()
+    probe = subprocess.run(
+        [binary, *scenario.args(), "--scripts", "none", "--accessible", "--no-banner", "--no-config"],
+        env=dict(os.environ, RUST_LOG="rustscan=info,rustscan::scanner=debug"),
+        capture_output=True, text=True, check=True,
+    )
+    opened = {
+        match.group(1) for line in probe.stdout.splitlines()
+        if (match := OPEN_LINE.match(line))
+    }
+    return {
+        "before": before, "after": states(),
+        "missing": sorted(scenario.expected(listeners) - opened),
+        "errors": [line for line in probe.stderr.splitlines()
+                   if "Typical socket connection errors" in line],
+    }
+
+
 def environment() -> dict[str, object]:
     system = platform.system()
     info: dict[str, object] = {
@@ -829,6 +860,7 @@ def run(args: argparse.Namespace) -> int:
 
     names = list(builds)
     results: Results = {sc.name: {name: [] for name in names} for sc in scenarios}
+    diagnostics = []
     try:
         warmup = next((sc for sc in scenarios if sc.name == "tcp-sweep"), scenarios[0])
         for name in names:
@@ -853,6 +885,16 @@ def run(args: argparse.Namespace) -> int:
                     )
                     if not res.ok:
                         print(f"    {res.error}", flush=True)
+                if platform.system() == "Darwin" and not diagnostics and any(
+                    sc.expected(listeners) - set(results[sc.name][name][-1].open) for name in names
+                ):
+                    # A failed pair cannot support a performance claim. Capture
+                    # its OS errors immediately, outside both measured scans.
+                    for name in names:
+                        record = {"build": name, "scenario": sc.name,
+                                  **diagnose_tcp(builds[name], sc, listeners)}
+                        diagnostics.append(record)
+                        print("TCP diagnosis: " + json.dumps(record), flush=True)
     finally:
         server.kill()
         server.wait()
@@ -872,6 +914,7 @@ def run(args: argparse.Namespace) -> int:
         "failures": failures,
         "mismatches": mismatches,
         "notes": notes,
+        "diagnostics": diagnostics,
     }
     markdown = render_markdown(report, results, scenarios)
     if args.json:

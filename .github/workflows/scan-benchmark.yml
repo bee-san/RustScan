@@ -231,13 +231,6 @@ jobs:
 
           python .github/scan-benchmark/scan_bench.py run "${args[@]}"
 
-      - name: Diagnose macOS TCP socket failures
-        if: always() && runner.os == 'macOS'
-        run: |
-          python .github/scan-benchmark/diagnose_tcp.py \
-            --build "base=$RUNNER_TEMP/bin/base$EXE" \
-            --build "head=$RUNNER_TEMP/bin/head$EXE" --json tcp-diagnosis.json
-
       - name: Publish the summary
         if: always()
         run: |
@@ -251,5 +244,4 @@ jobs:
           path: |
             bench-results.json
             bench-results.md
-            tcp-diagnosis.json
           if-no-files-found: ignore
