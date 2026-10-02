@@ -192,6 +192,7 @@ def build_scenarios(
 
     scenarios = [
         Scenario("tcp-1-port", "TCP, 1 open port", lo, ports=(TCP_PORTS[0],), repeat=3),
+        Scenario("tcp-open", "TCP, open listeners only", lo, ports=TCP_PORTS, repeat=3),
         Scenario("tcp-sweep", f"TCP, {ports(sweep)}, default batch", lo, sweep),
         Scenario(
             "tcp-sweep-b500", f"TCP, {ports(small_sweep)}, small batch", lo, small_sweep, batch=500
@@ -224,6 +225,12 @@ def build_scenarios(
         ]
     scenarios.append(
         Scenario("udp-sweep", f"UDP, {ports(sweep)}", lo, sweep, timeout_ms=500, udp=True)
+    )
+    scenarios.append(
+        Scenario(
+            "udp-open", "UDP, echo responders only", lo, ports=UDP_PORTS,
+            timeout_ms=500, udp=True, repeat=9,
+        )
     )
     if delayed:
         scenarios.append(
