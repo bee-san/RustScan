@@ -2,7 +2,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use rustscan::generated::get_parsed_data;
 use rustscan::input::{Opts, PortRanges, ScanOrder};
 use rustscan::port_strategy::PortStrategy;
-use rustscan::scanner::build_udp_payload_lookup;
+use rustscan::scanner::{build_udp_payload_lookup, Scanner};
 use std::collections::BTreeMap;
 use std::hint::black_box;
 use std::net::IpAddr;
@@ -59,6 +59,50 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.iter(bench_address_parsing)
     });
     address_group.finish();
+
+    // Exercise production port preparation without opening a socket. The
+    // scanner has no target addresses, and runtime construction is not timed.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut preparation = c.benchmark_group("port preparation");
+    preparation.sample_size(20);
+    preparation.warm_up_time(Duration::from_millis(500));
+    preparation.measurement_time(Duration::from_secs(2));
+    for (port_count, excluded_count) in [
+        (1, 1),
+        (16, 4),
+        (64, 1),
+        (64, 4096),
+        (4096, 0),
+        (4096, 64),
+        (4096, 4096),
+        (65535, 0),
+        (65535, 4),
+        (65535, 64),
+        (65535, 1024),
+        (65535, 4096),
+    ] {
+        let scanner = Scanner::new(
+            &[],
+            500,
+            Duration::from_millis(100),
+            1,
+            true,
+            PortStrategy::Manual((1..=port_count).collect()),
+            true,
+            (0..excluded_count)
+                .map(|i| (i * 13 % 65536) as u16)
+                .collect(),
+            false,
+        );
+        preparation.bench_function(
+            format!("{port_count} ports, {excluded_count} exclusions"),
+            |b| b.iter(|| black_box(runtime.block_on(black_box(&scanner).run_with_status()))),
+        );
+    }
+    preparation.finish();
 
     // UDP payload lookup micro-benchmark: compares the old linear scan of the
     // payload map with the precomputed port -> payload lookup. No sockets.

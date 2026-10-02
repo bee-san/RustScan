@@ -184,6 +184,14 @@ jobs:
           head -c 200 "$RUNNER_TEMP/far.json"; echo
           echo "DELAYED_OK=1" >> "$GITHUB_ENV"
 
+      - name: Provision macOS TCP memory for repeated socket batches
+        if: runner.os == 'macOS'
+        run: |
+          # XNU's TCP accounting hard limit otherwise makes both builds miss
+          # listeners with ENOBUFS during repeated sweeps. Apply one budget to
+          # both builds before timing; keep all input sizes and gates intact.
+          sudo "$(command -v python)" .github/scan-benchmark/macos_tcp_memory.py
+
       - name: Describe the runner
         continue-on-error: true
         run: |
@@ -195,7 +203,8 @@ jobs:
             ss -Hltnu | sort -k5 | head -n 50 || true
           elif [ "$RUNNER_OS" = macOS ]; then
             for oid in hw.ncpu machdep.cpu.brand_string kern.maxfilesperproc \
-              net.inet.ip.portrange.first net.inet.ip.portrange.last; do
+              net.inet.ip.portrange.first net.inet.ip.portrange.last \
+              kern.ipc.maxsockbuf kern.ipc.nmbclusters; do
               sysctl "$oid" || true
             done
           fi
