@@ -1494,6 +1494,7 @@ dependencies = [
  "gcd",
  "hickory-resolver",
  "itertools 0.15.0",
+ "libc",
  "log",
  "once_cell",
  "parameterized",
@@ -1504,6 +1505,7 @@ dependencies = [
  "text_placeholder",
  "tokio",
  "toml",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
