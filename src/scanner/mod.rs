@@ -33,6 +33,8 @@ use tokio::time::{sleep, timeout};
 const WORK_PER_TURN: usize = 128;
 
 /// Keeps the generated order, including duplicate ports, while removing exclusions.
+// Keep the bitmap out of the async polling frame, which runs on every wake.
+#[inline(never)]
 fn filter_excluded_ports(mut ports: Vec<u16>, excluded: &[u16]) -> Vec<u16> {
     if excluded.is_empty() {
         return ports;
