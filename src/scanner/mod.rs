@@ -32,6 +32,31 @@ use tokio::time::{sleep, timeout};
 /// polls to about a millisecond on Linux.
 const WORK_PER_TURN: usize = 128;
 
+/// Keeps the generated order, including duplicate ports, while removing exclusions.
+fn filter_excluded_ports(mut ports: Vec<u16>, excluded: &[u16]) -> Vec<u16> {
+    if excluded.is_empty() {
+        return ports;
+    }
+
+    // Bitmap setup costs more than membership checks on short lists or when
+    // there are more exclusions than candidate ports. Keep that path unchanged.
+    if ports.len() < 64 || excluded.len() > ports.len() {
+        return ports
+            .iter()
+            .filter(|port| !excluded.contains(port))
+            .copied()
+            .collect();
+    }
+
+    // The complete u16 port space fits in an 8 KiB bitmap.
+    let mut excluded_bits = [0_u64; 1024];
+    for &port in excluded {
+        excluded_bits[usize::from(port) / 64] |= 1 << (port % 64);
+    }
+    ports.retain(|&port| excluded_bits[usize::from(port) / 64] & (1 << (port % 64)) == 0);
+    ports
+}
+
 /// UDP payload lookup: port -> payload bytes
 ///
 /// `get_parsed_data()` returns a `&'static BTreeMap<...>`, so we can store
@@ -190,13 +215,7 @@ impl Scanner {
     }
 
     async fn scan(&self) -> Vec<PortStatus> {
-        let ports: Vec<u16> = self
-            .port_strategy
-            .order()
-            .iter()
-            .filter(|&port| !self.exclude_ports.contains(port))
-            .copied()
-            .collect();
+        let ports = filter_excluded_ports(self.port_strategy.order(), &self.exclude_ports);
         let mut found_sockets: Vec<PortStatus> = Vec::new();
         let mut errors: HashSet<String> = HashSet::new();
 
