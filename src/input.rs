@@ -1,6 +1,9 @@
 //! Provides a means to read, parse and hold configuration options for scans.
-use clap::{Parser, ValueEnum};
+use clap::parser::ValueSource;
+use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
 use serde_derive::Deserialize;
+use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 
@@ -231,18 +234,48 @@ pub struct Opts {
     /// scanning the next one, for slow, low-noise scans. 0 disables the delay.
     #[arg(long, default_value = "0", value_name = "MS")]
     pub interval: u64,
+
+    /// Ids of the options given explicitly on the command line. The
+    /// configuration file never overrides these (see [`Opts::merge`]).
+    #[arg(skip)]
+    pub cli_args: HashSet<String>,
 }
 
 #[cfg(not(tarpaulin_include))]
 impl Opts {
     pub fn read() -> Self {
-        let mut opts = Opts::parse();
+        Self::try_read_from(std::env::args_os()).unwrap_or_else(|e| e.exit())
+    }
+
+    /// Parses `args` like [`Opts::read`] does, returning an error instead of
+    /// exiting.
+    fn try_read_from<I, T>(args: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString> + Clone,
+    {
+        let mut command = Self::command();
+        let mut matches = command.try_get_matches_from_mut(args)?;
+
+        // clap fills in default values, so the parsed struct alone cannot
+        // tell `-b 4500` apart from no `-b` at all. Record what the user
+        // actually typed so that `merge` lets it win over the config file.
+        let cli_args = command
+            .get_arguments()
+            .map(|arg| arg.get_id().as_str())
+            .filter(|id| matches.value_source(id) == Some(ValueSource::CommandLine))
+            .map(str::to_owned)
+            .collect();
+
+        let mut opts =
+            Self::from_arg_matches_mut(&mut matches).map_err(|e| e.format(&mut command))?;
+        opts.cli_args = cli_args;
 
         if opts.ports.is_none() && opts.range.is_none() {
             opts.range = Some(PortRanges(vec![(LOWEST_PORT_NUMBER, TOP_PORT_NUMBER)]));
         }
 
-        opts
+        Ok(opts)
     }
 
     /// Validates options whose availability or semantics depend on the
@@ -267,7 +300,8 @@ impl Opts {
     }
 
     /// Reads the command line arguments into an Opts struct and merge
-    /// values found within the user configuration file.
+    /// values found within the user configuration file. Options given on the
+    /// command line take precedence over the configuration file.
     pub fn merge(&mut self, config: &Config) {
         if !self.no_config {
             self.merge_required(config);
@@ -280,7 +314,9 @@ impl Opts {
             ($($field: ident),+) => {
                 $(
                     if let Some(e) = &config.$field {
-                        self.$field = e.clone();
+                        if !self.cli_args.contains(stringify!($field)) {
+                            self.$field = e.clone();
+                        }
                     }
                 )+
             }
@@ -296,7 +332,7 @@ impl Opts {
         macro_rules! merge_optional {
             ($($field: ident),+) => {
                 $(
-                    if config.$field.is_some() {
+                    if config.$field.is_some() && !self.cli_args.contains(stringify!($field)) {
                         self.$field = config.$field.clone();
                     }
                 )+
@@ -337,6 +373,7 @@ impl Default for Opts {
             udp: false,
             closed: false,
             interval: 0,
+            cli_args: HashSet::new(),
         }
     }
 }
@@ -459,6 +496,7 @@ pub fn old_default_config_path() -> PathBuf {
 mod tests {
     use clap::{CommandFactory, Parser};
     use parameterized::parameterized;
+    use std::collections::HashSet;
 
     use super::{Config, Opts, PortRanges, ScanOrder, ScriptsRequired};
 
@@ -633,6 +671,91 @@ mod tests {
         assert_eq!(opts.range, config.range);
         assert_eq!(opts.ulimit, config.ulimit);
         assert_eq!(opts.resolver, config.resolver);
+    }
+
+    #[test]
+    fn cli_arguments_override_config() {
+        // Regression test for #722: the config file used to silently replace
+        // options given on the command line, e.g. `-r` with its `range`.
+        let mut opts = Opts::try_read_from([
+            "rustscan",
+            "-a",
+            "192.168.0.1",
+            "-r",
+            "8600-8650",
+            "-b",
+            "100",
+            // Passing clap's default value explicitly must still win.
+            "-t",
+            "1500",
+            "--tries",
+            "3",
+            "--scan-order",
+            "serial",
+            "--scripts",
+            "none",
+            "-g",
+            "--",
+            "-sV",
+        ])
+        .unwrap();
+        let config: Config = toml::from_str(
+            r#"
+            addresses = ["127.0.0.1"]
+            range = { start = 1, end = 100 }
+            batch_size = 25000
+            timeout = 1000
+            tries = 1
+            scan_order = "Random"
+            scripts = "Custom"
+            greppable = false
+            command = ["-A"]
+            "#,
+        )
+        .unwrap();
+
+        opts.merge(&config);
+
+        assert_eq!(opts.addresses, vec!["192.168.0.1".to_owned()]);
+        assert_eq!(opts.range, Some(PortRanges(vec![(8_600, 8_650)])));
+        assert_eq!(opts.batch_size, 100);
+        assert_eq!(opts.timeout, 1_500);
+        assert_eq!(opts.tries, 3);
+        assert_eq!(opts.scan_order, ScanOrder::Serial);
+        assert_eq!(opts.scripts, ScriptsRequired::None);
+        assert!(opts.greppable);
+        assert_eq!(opts.command, vec!["-sV".to_owned()]);
+    }
+
+    #[test]
+    fn config_fills_arguments_not_given_on_cli() {
+        let mut opts = Opts::try_read_from(["rustscan", "-a", "192.168.0.1"]).unwrap();
+        let config: Config = toml::from_str(
+            r#"
+            addresses = ["127.0.0.1"]
+            range = { start = 1, end = 100 }
+            batch_size = 25000
+            timeout = 1000
+            tries = 3
+            scan_order = "Random"
+            greppable = true
+            command = ["-A"]
+            "#,
+        )
+        .unwrap();
+
+        opts.merge(&config);
+
+        // Only `-a` was typed; clap defaults such as `-b 4500` must not count.
+        assert_eq!(opts.cli_args, HashSet::from(["addresses".to_owned()]));
+        assert_eq!(opts.addresses, vec!["192.168.0.1".to_owned()]);
+        assert_eq!(opts.range, Some(PortRanges(vec![(1, 100)])));
+        assert_eq!(opts.batch_size, 25_000);
+        assert_eq!(opts.timeout, 1_000);
+        assert_eq!(opts.tries, 3);
+        assert_eq!(opts.scan_order, ScanOrder::Random);
+        assert!(opts.greppable);
+        assert_eq!(opts.command, vec!["-A".to_owned()]);
     }
 
     #[test]
