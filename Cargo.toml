@@ -43,6 +43,12 @@ anyhow = "1.0.40"
 text_placeholder = { version = "0.5", features = ["struct_context"] }
 once_cell = "1.21.4"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Networking_WinSock"] }
+
 [dev-dependencies]
 parameterized = "2.0.0"
 criterion = { version = "0.8", features = ["html_reports"] }

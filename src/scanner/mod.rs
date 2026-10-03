@@ -7,13 +7,16 @@ use log::debug;
 mod socket_iterator;
 use socket_iterator::SocketIterator;
 
+mod errors;
+use errors::{diagnostic_error, is_descriptor_exhaustion, ScanErrors};
+
 use colored::Colorize;
 use futures::stream::{FuturesUnordered, StreamExt};
 use std::collections::BTreeMap;
 use std::future::poll_fn;
 use std::task::Poll;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr},
     num::NonZeroU8,
@@ -215,7 +218,8 @@ impl Scanner {
     async fn scan(&self) -> Vec<PortStatus> {
         let ports = filter_excluded_ports(self.port_strategy.order(), &self.exclude_ports);
         let mut found_sockets: Vec<PortStatus> = Vec::new();
-        let mut errors: HashSet<String> = HashSet::new();
+        let mut errors =
+            ScanErrors::new(log::log_enabled!(log::Level::Debug), self.ips.len() * 1000);
 
         // Build UDP payload lookup once (only if we are scanning UDP).
         // This avoids cloning a big map into every spawned future and turns
@@ -250,7 +254,7 @@ impl Scanner {
             }
         }
 
-        debug!("Typical socket connection errors {errors:?}");
+        debug!("Typical socket connection errors {:?}", errors.messages());
         debug!("Sockets found: {:?}", found_sockets);
         found_sockets
     }
@@ -271,7 +275,7 @@ impl Scanner {
         mut sockets: SocketIterator<'_>,
         udp_payloads: &Option<Arc<UdpPayloadLookup>>,
         found_sockets: &mut Vec<PortStatus>,
-        errors: &mut HashSet<String>,
+        errors: &mut ScanErrors,
     ) {
         let mut ftrs = FuturesUnordered::new();
 
@@ -319,24 +323,19 @@ impl Scanner {
         &self,
         result: io::Result<PortStatus>,
         found_sockets: &mut Vec<PortStatus>,
-        errors: &mut HashSet<String>,
+        errors: &mut ScanErrors,
     ) {
         match result {
             Ok(status) => found_sockets.push(status),
-            Err(e) => {
-                let error_string = e.to_string();
-                if errors.len() < self.ips.len() * 1000 {
-                    errors.insert(error_string);
-                }
-            }
+            Err(error) => errors.record(error),
         }
     }
 
     /// Given a socket, scan it self.tries times.
     /// Turns the address into a SocketAddr
     /// Deals with the `<result>` type
-    /// If it experiences error ErrorKind::Other then too many files are open and it Panics!
-    /// Else any other error, it returns the error in Result as a string
+    /// Panics if the OS reports descriptor exhaustion.
+    /// Other failures retain their I/O error, with target context for debug diagnostics.
     /// If no errors occur, it returns the port number in Result to signify the port is open.
     /// This function mainly deals with the logic of Results handling.
     /// # Example
@@ -376,14 +375,14 @@ impl Scanner {
                         return Ok(PortStatus::Closed(socket));
                     }
 
-                    let mut error_string = e.to_string();
-
-                    assert!(!error_string.to_lowercase().contains("too many open files"), "Too many open files. Please reduce batch size. The default is 5000. Try -b 2500.");
+                    assert!(!is_descriptor_exhaustion(&e), "Too many open files. Please reduce batch size. The default is 5000. Try -b 2500.");
 
                     if nr_try == tries {
-                        error_string.push(' ');
-                        error_string.push_str(&socket.ip().to_string());
-                        return Err(io::Error::other(error_string));
+                        return Err(diagnostic_error(
+                            e,
+                            socket.ip(),
+                            log::log_enabled!(log::Level::Debug),
+                        ));
                     }
                 }
             };
