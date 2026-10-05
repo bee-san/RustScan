@@ -605,6 +605,7 @@ mod tests {
     use super::*;
 
     use crate::input::{PortRanges, ScanOrder};
+    use std::collections::HashSet;
 
     // These tests never open sockets: they only build a `Scanner` (and its
     // futures), run a scan that has no socket to scan, or inspect the payload
