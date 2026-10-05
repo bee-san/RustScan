@@ -35,6 +35,29 @@ use tokio::time::{sleep, timeout};
 /// polls to about a millisecond on Linux.
 const WORK_PER_TURN: usize = 128;
 
+/// Keeps the generated order, including duplicate ports, while removing exclusions.
+// Keep the bitmap out of the async polling frame, which runs on every wake.
+#[inline(never)]
+fn filter_excluded_ports(mut ports: Vec<u16>, excluded: &[u16]) -> Vec<u16> {
+    if excluded.is_empty() {
+        return ports;
+    }
+
+    // Bitmap setup costs more than membership checks on short port lists.
+    if ports.len() < 64 {
+        ports.retain(|port| !excluded.contains(port));
+        return ports;
+    }
+
+    // The complete u16 port space fits in an 8 KiB bitmap.
+    let mut excluded_bits = [0_u64; 1024];
+    for &port in excluded {
+        excluded_bits[usize::from(port) / 64] |= 1 << (port % 64);
+    }
+    ports.retain(|&port| excluded_bits[usize::from(port) / 64] & (1 << (port % 64)) == 0);
+    ports
+}
+
 /// UDP payload lookup: port -> payload bytes
 ///
 /// `get_parsed_data()` returns a `&'static BTreeMap<...>`, so we can store
@@ -193,13 +216,7 @@ impl Scanner {
     }
 
     async fn scan(&self) -> Vec<PortStatus> {
-        let ports: Vec<u16> = self
-            .port_strategy
-            .order()
-            .iter()
-            .filter(|&port| !self.exclude_ports.contains(port))
-            .copied()
-            .collect();
+        let ports = filter_excluded_ports(self.port_strategy.order(), &self.exclude_ports);
         let mut found_sockets: Vec<PortStatus> = Vec::new();
         let mut errors =
             ScanErrors::new(log::log_enabled!(log::Level::Debug), self.ips.len() * 1000);
@@ -607,6 +624,35 @@ mod tests {
             Vec::new(),
             false,
         )
+    }
+
+    #[test]
+    fn port_exclusions_preserve_order_duplicates_and_boundaries() {
+        let inputs = [
+            Vec::new(),
+            vec![65535, 0, 80, 443, 80, 65535, 1],
+            (0..=65535).collect(),
+            PortStrategy::pick(&Some(PortRanges(vec![(0, 1023)])), None, ScanOrder::Random).order(),
+        ];
+        let exclusions = [
+            Vec::new(),
+            vec![0],
+            vec![0, 65535, 0, 443],
+            (0..1024).collect(),
+            (0..=65535).collect(),
+        ];
+
+        for ports in inputs {
+            for excluded in &exclusions {
+                let excluded_set: HashSet<_> = excluded.iter().copied().collect();
+                let expected: Vec<u16> = ports
+                    .iter()
+                    .filter(|&port| !excluded_set.contains(port))
+                    .copied()
+                    .collect();
+                assert_eq!(filter_excluded_ports(ports.clone(), excluded), expected);
+            }
+        }
     }
 
     #[test]

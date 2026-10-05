@@ -142,11 +142,13 @@ class Scenario:
     timeout_ms: int = 1500
     udp: bool = False
     repeat: int = 1  # extra samples for very short scenarios
+    excluded_ports: tuple[int, ...] = ()
 
     @property
     def sockets(self) -> int:
         span = sum(end - start + 1 for start, end in self.ranges)
-        return len(self.addresses) * (len(self.ports) + span)
+        excluded = sum(self.covers(port) for port in set(self.excluded_ports))
+        return len(self.addresses) * (len(self.ports) + span - excluded)
 
     def covers(self, port: int) -> bool:
         return port in self.ports or any(s <= port <= e for s, e in self.ranges)
@@ -160,6 +162,8 @@ class Scenario:
         args += ["-b", str(self.batch), "-t", str(self.timeout_ms)]
         if self.udp:
             args.append("--udp")
+        if self.excluded_ports:
+            args += ["--exclude-ports", ",".join(map(str, self.excluded_ports))]
         return args
 
     def expected(self, listeners: dict) -> set[str]:
@@ -168,7 +172,7 @@ class Scenario:
             f"{address}:{port}"
             for address in self.addresses
             for port in by_address.get(address, [])
-            if self.covers(port)
+            if self.covers(port) and port not in self.excluded_ports
         }
 
     def describe(self) -> str:
@@ -194,6 +198,13 @@ def build_scenarios(
         Scenario("tcp-1-port", "TCP, 1 open port", lo, ports=(TCP_PORTS[0],), repeat=3),
         Scenario("tcp-open", "TCP, open listeners only", lo, ports=TCP_PORTS, repeat=3),
         Scenario("tcp-sweep", f"TCP, {ports(sweep)}, default batch", lo, sweep),
+        Scenario(
+            "tcp-sweep-excluded",
+            f"TCP, {ports(sweep)}, 1,024 excluded ports",
+            lo,
+            sweep,
+            excluded_ports=tuple(range(1024, 2048)),
+        ),
         Scenario(
             "tcp-sweep-b500", f"TCP, {ports(small_sweep)}, small batch", lo, small_sweep, batch=500
         ),
@@ -553,6 +564,41 @@ def ephemeral_range() -> tuple[int, int] | None:
     return (49152, 65535) if system == "Windows" else None
 
 
+def diagnose_tcp(binary: str, scenario: Scenario, listeners: dict) -> dict:
+    """Untimed failure capture on a disposable macOS runner, using debug logs."""
+    from macos_tcp_memory import tcp_memory
+
+    def states() -> dict[str, int]:
+        snapshot = subprocess.run(
+            ["netstat", "-an", "-p", "tcp"], capture_output=True, text=True, check=True
+        )
+        counts: dict[str, int] = {}
+        for line in snapshot.stdout.splitlines():
+            if line.startswith("tcp"):
+                state = line.split()[-1]
+                counts[state] = counts.get(state, 0) + 1
+        return counts
+
+    before = states()
+    memory_before = tcp_memory()
+    probe = subprocess.run(
+        [binary, *scenario.args(), "--scripts", "none", "--accessible", "--no-banner", "--no-config"],
+        env=dict(os.environ, RUST_LOG="rustscan=info,rustscan::scanner=debug"),
+        capture_output=True, text=True, check=True,
+    )
+    opened = {
+        match.group(1) for line in probe.stdout.splitlines()
+        if (match := OPEN_LINE.match(line))
+    }
+    return {
+        "before": before, "after": states(),
+        "memory_before": memory_before, "memory_after": tcp_memory(),
+        "missing": sorted(scenario.expected(listeners) - opened),
+        "errors": [line for line in probe.stderr.splitlines()
+                   if "Typical socket connection errors" in line],
+    }
+
+
 def environment() -> dict[str, object]:
     system = platform.system()
     info: dict[str, object] = {
@@ -825,6 +871,7 @@ def run(args: argparse.Namespace) -> int:
 
     names = list(builds)
     results: Results = {sc.name: {name: [] for name in names} for sc in scenarios}
+    diagnostics = []
     try:
         warmup = next((sc for sc in scenarios if sc.name == "tcp-sweep"), scenarios[0])
         for name in names:
@@ -849,6 +896,16 @@ def run(args: argparse.Namespace) -> int:
                     )
                     if not res.ok:
                         print(f"    {res.error}", flush=True)
+                if platform.system() == "Darwin" and not diagnostics and any(
+                    sc.expected(listeners) - set(results[sc.name][name][-1].open) for name in names
+                ):
+                    # A failed pair cannot support a performance claim. Capture
+                    # its OS errors immediately, outside both measured scans.
+                    for name in names:
+                        record = {"build": name, "scenario": sc.name,
+                                  **diagnose_tcp(builds[name], sc, listeners)}
+                        diagnostics.append(record)
+                        print("TCP diagnosis: " + json.dumps(record), flush=True)
     finally:
         server.kill()
         server.wait()
@@ -868,6 +925,7 @@ def run(args: argparse.Namespace) -> int:
         "failures": failures,
         "mismatches": mismatches,
         "notes": notes,
+        "diagnostics": diagnostics,
     }
     markdown = render_markdown(report, results, scenarios)
     if args.json:
