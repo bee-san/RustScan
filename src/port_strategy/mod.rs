@@ -18,6 +18,20 @@ pub enum PortStrategy {
 
 impl PortStrategy {
     pub fn pick(range: &Option<PortRanges>, ports: Option<Vec<u16>>, order: ScanOrder) -> Self {
+        let ports = match (ports, range) {
+            (Some(mut p), Some(r)) => {
+                for (start, end) in &r.0 {
+                    for port in *start..=*end {
+                        p.push(port);
+                    }
+                }
+                let mut seen = std::collections::HashSet::new();
+                p.retain(|port| seen.insert(*port));
+                Some(p)
+            }
+            (Some(p), None) => Some(p),
+            (None, _) => None,
+        };
         match order {
             ScanOrder::Serial if ports.is_none() => {
                 let port_ranges = range.as_ref().unwrap();
@@ -135,6 +149,14 @@ mod tests {
         let strategy = PortStrategy::pick(&None, Some(vec![80, 443]), ScanOrder::Serial);
         let result = strategy.order();
         assert_eq!(vec![80, 443], result);
+    }
+
+    #[test]
+    fn picks_both_ports_and_range() {
+        let range = Some(PortRanges(vec![(8080, 8082)]));
+        let ports = Some(vec![80, 443, 8081]);
+        let strategy = PortStrategy::pick(&range, ports, ScanOrder::Serial);
+        assert_eq!(strategy.order(), vec![80, 443, 8081, 8080, 8082]);
     }
 
     #[test]

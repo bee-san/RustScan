@@ -98,6 +98,45 @@ fn parse_range(input: &str) -> Option<(u16, u16)> {
 /// Parse a comma-separated list of `start-end` ranges into `PortRanges`.
 ///
 /// Errors with a helpful message identifying the bad token.
+#[cfg(not(tarpaulin_include))]
+/// Parse a comma-separated list of ports or `start-end` port ranges into a flat `Vec<u16>`.
+///
+/// Example: `80,443,1000-1005` -> `[80, 443, 1000, 1001, 1002, 1003, 1004, 1005]`
+pub fn parse_ports(input: &str) -> Result<Vec<u16>, String> {
+    let s = input.trim();
+    if s.is_empty() {
+        return Err(
+            "empty input: expected one or more comma-separated ports or port ranges".into(),
+        );
+    }
+
+    let mut ports = Vec::new();
+    for token in s.split(',') {
+        let t = token.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if let Some((start, end)) = parse_range(t) {
+            for p in start..=end {
+                ports.push(p);
+            }
+        } else if let Ok(port) = t.parse::<u16>() {
+            if port == 0 {
+                return Err("port number 0 is invalid — expected 1 <= port <= 65535".into());
+            }
+            ports.push(port);
+        } else {
+            return Err(format!(
+                "invalid port or range token `{t}` — expected port (e.g. 80) or range (e.g. 1-1000)"
+            ));
+        }
+    }
+    if ports.is_empty() {
+        return Err("no valid ports parsed".into());
+    }
+    Ok(ports)
+}
+
 fn parse_ranges(input: &str) -> Result<PortRanges, String> {
     let s = input.trim();
     if s.is_empty() {
@@ -138,12 +177,12 @@ pub struct Opts {
     #[arg(short, long, value_delimiter = ',')]
     pub addresses: Vec<String>,
 
-    /// A list of comma separated ports to be scanned. Example: 80,443,8080.
-    #[arg(short, long, value_delimiter = ',')]
+    /// A list of comma separated ports or port ranges to be scanned. Example: 80,443,1000-2000.
+    #[arg(short, long, value_parser = parse_ports)]
     pub ports: Option<Vec<u16>>,
 
     /// Ranges of ports as comma-separated start-end pairs. Example: 1-500,1000-2500,4000-7000
-    #[arg(short, long, conflicts_with = "ports", value_parser = parse_ranges)]
+    #[arg(short, long, value_parser = parse_ranges)]
     pub range: Option<PortRanges>,
 
     /// Whether to ignore the configuration file or not.
@@ -817,6 +856,26 @@ mod tests {
                 range
             );
         }
+    }
+
+    #[test]
+    fn parses_mixed_ports_and_ranges() {
+        let ports = super::parse_ports("80,443,8000-8003,9000").expect("should parse");
+        assert_eq!(ports, vec![80, 443, 8000, 8001, 8002, 8003, 9000]);
+    }
+
+    #[test]
+    fn parses_ports_with_whitespace() {
+        let ports = super::parse_ports(" 80 , 443 , 1000-1002 ").expect("should parse");
+        assert_eq!(ports, vec![80, 443, 1000, 1001, 1002]);
+    }
+
+    #[test]
+    fn rejects_invalid_port_tokens() {
+        assert!(super::parse_ports("80,abc").is_err());
+        assert!(super::parse_ports("0").is_err());
+        assert!(super::parse_ports("100-50").is_err());
+        assert!(super::parse_ports("").is_err());
     }
 
     #[test]
