@@ -35,9 +35,27 @@ extern crate log;
 #[allow(clippy::too_many_lines)]
 /// Faster Nmap scanning with Rust
 /// If you're looking for the actual scanning, check out the module Scanner
+#[cfg(windows)]
+fn enable_ansi_support() {
+    use windows_sys::Win32::System::Console::{
+        GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+        STD_OUTPUT_HANDLE,
+    };
+    unsafe {
+        let handle = GetStdHandle(STD_OUTPUT_HANDLE);
+        let mut mode = 0;
+        if GetConsoleMode(handle, &mut mode) != 0 {
+            SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn enable_ansi_support() {}
+
+#[allow(clippy::too_many_lines)]
 fn main() {
-    #[cfg(not(unix))]
-    let _ = ansi_term::enable_ansi_support();
+    enable_ansi_support();
 
     env_logger::init();
     let mut benchmarks = Benchmark::init();

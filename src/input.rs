@@ -1,7 +1,7 @@
 //! Provides a means to read, parse and hold configuration options for scans.
 use clap::parser::ValueSource;
 use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
-use serde_derive::Deserialize;
+use serde::Deserialize;
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;

@@ -10,7 +10,7 @@ use socket_iterator::SocketIterator;
 mod errors;
 use errors::{diagnostic_error, is_descriptor_exhaustion, ScanErrors};
 
-use colored::Colorize;
+use colorful::Colorful;
 use futures::stream::{FuturesUnordered, StreamExt};
 use std::collections::BTreeMap;
 use std::future::poll_fn;
@@ -530,7 +530,7 @@ impl Scanner {
             if self.accessible {
                 println_safe(format_args!("Open {socket}"));
             } else {
-                println_safe(format_args!("Open {}", socket.to_string().purple()));
+                println_safe(format_args!("Open {}", socket.to_string().magenta()));
             }
         }
     }

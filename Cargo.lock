@@ -39,15 +39,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
 
 [[package]]
-name = "ansi_term"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d52a9bb7ec0cf484c551830a7ce27bd20d67eac647e1befb56b0be4ee39a55d2"
-dependencies = [
- "winapi",
-]
-
-[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -272,15 +263,6 @@ name = "colorchoice"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b63caa9aa9397e2d9480a9b13673856c78d8ac123288526c37d7839f2a86990"
-
-[[package]]
-name = "colored"
-version = "3.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
-dependencies = [
- "windows-sys 0.60.2",
-]
 
 [[package]]
 name = "colorful"
@@ -1420,12 +1402,9 @@ dependencies = [
 name = "rustscan"
 version = "2.4.1"
 dependencies = [
- "ansi_term",
- "anstream",
  "anyhow",
  "cidr-utils",
  "clap",
- "colored",
  "colorful",
  "criterion",
  "dirs",
@@ -1441,7 +1420,6 @@ dependencies = [
  "rand 0.10.3",
  "rlimit",
  "serde",
- "serde_derive",
  "text_placeholder",
  "tokio",
  "toml",
