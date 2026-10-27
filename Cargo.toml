@@ -18,7 +18,6 @@ exclude = [
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive", "wrap_help"] }
-colored = "3.1.1"
 # Async runtime for the scanner. hickory-resolver already depends on tokio, so
 # this adds no crates; only the features the scanner itself uses are listed.
 tokio = { version = "1.44.2", features = ["rt", "net", "time"] }
@@ -27,15 +26,12 @@ futures = { version = "0.3", default-features = false, features = ["std"] }
 rlimit = "0.11.0"
 log = "0.4.32"
 env_logger = "0.11.10"
-anstream = "=1.0.0"
 dirs = "7.0.0"
 gcd = "2.0.1"
 rand = "0.10.1"
 colorful = "0.3.2"
-ansi_term = "0.12.1"
 toml = "1.1.2"
-serde = "1.0.124"
-serde_derive = "1.0.116"
+serde = { version = "1.0", features = ["derive"] }
 cidr-utils = "0.7.1"
 itertools = "0.15.0"
 hickory-resolver = { version = "0.24.3", features = ["dns-over-rustls"] }
@@ -47,7 +43,7 @@ once_cell = "1.21.4"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Networking_WinSock"] }
+windows-sys = { version = "0.59", features = ["Win32_Networking_WinSock", "Win32_System_Console"] }
 
 [dev-dependencies]
 parameterized = "2.0.0"

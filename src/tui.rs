@@ -2,6 +2,23 @@
 
 use std::io::Write;
 
+use colorful::Colorful;
+
+#[inline]
+pub fn icon_warning() -> colorful::core::color_string::CString {
+    "[!]".red().bold()
+}
+
+#[inline]
+pub fn icon_detail() -> colorful::core::color_string::CString {
+    "[~]".blue().bold()
+}
+
+#[inline]
+pub fn icon_output() -> colorful::core::color_string::CString {
+    "[>]".color(colorful::RGB::new(0, 255, 9)).bold()
+}
+
 /// Prints a single line to stdout without ever panicking.
 ///
 /// `println!` panics when writing to stdout fails, which is fatal under the
@@ -32,11 +49,7 @@ pub fn println_safe(args: std::fmt::Arguments<'_>) {
 #[macro_export]
 macro_rules! warning {
     ($name:expr) => {
-        $crate::tui::println_safe(format_args!(
-            "{} {}",
-            ansi_term::Colour::Red.bold().paint("[!]"),
-            $name
-        ));
+        $crate::tui::println_safe(format_args!("{} {}", $crate::tui::icon_warning(), $name));
     };
     ($name:expr, $greppable:expr, $accessible:expr) => {
         // if not greppable then print, otherwise no else statement so do not print.
@@ -47,7 +60,7 @@ macro_rules! warning {
             } else {
                 $crate::tui::println_safe(format_args!(
                     "{} {}",
-                    ansi_term::Colour::Red.bold().paint("[!]"),
+                    $crate::tui::icon_warning(),
                     $name
                 ));
             }
@@ -58,11 +71,7 @@ macro_rules! warning {
 #[macro_export]
 macro_rules! detail {
     ($name:expr) => {
-        $crate::tui::println_safe(format_args!(
-            "{} {}",
-            ansi_term::Colour::Blue.bold().paint("[~]"),
-            $name
-        ));
+        $crate::tui::println_safe(format_args!("{} {}", $crate::tui::icon_detail(), $name));
     };
     ($name:expr, $greppable:expr, $accessible:expr) => {
         // if not greppable then print, otherwise no else statement so do not print.
@@ -71,11 +80,7 @@ macro_rules! detail {
                 // Don't print the ascii art
                 $crate::tui::println_safe(format_args!("{}", $name));
             } else {
-                $crate::tui::println_safe(format_args!(
-                    "{} {}",
-                    ansi_term::Colour::Blue.bold().paint("[~]"),
-                    $name
-                ));
+                $crate::tui::println_safe(format_args!("{} {}", $crate::tui::icon_detail(), $name));
             }
         }
     };
@@ -84,11 +89,7 @@ macro_rules! detail {
 #[macro_export]
 macro_rules! output {
     ($name:expr) => {
-        $crate::tui::println_safe(format_args!(
-            "{} {}",
-            ansi_term::Colour::RGB(0, 255, 9).bold().paint("[>]"),
-            $name
-        ));
+        $crate::tui::println_safe(format_args!("{} {}", $crate::tui::icon_output(), $name));
     };
     ($name:expr, $greppable:expr, $accessible:expr) => {
         // if not greppable then print, otherwise no else statement so do not print.
@@ -97,11 +98,7 @@ macro_rules! output {
                 // Don't print the ascii art
                 $crate::tui::println_safe(format_args!("{}", $name));
             } else {
-                $crate::tui::println_safe(format_args!(
-                    "{} {}",
-                    ansi_term::Colour::RGB(0, 255, 9).bold().paint("[>]"),
-                    $name
-                ));
+                $crate::tui::println_safe(format_args!("{} {}", $crate::tui::icon_output(), $name));
             }
         }
     };

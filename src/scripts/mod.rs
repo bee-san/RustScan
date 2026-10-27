@@ -75,7 +75,7 @@
 use crate::input::ScriptsRequired;
 use anyhow::{anyhow, Result};
 use log::debug;
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{self, prelude::*};
 use std::net::IpAddr;
