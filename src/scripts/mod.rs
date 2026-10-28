@@ -348,8 +348,7 @@ impl ScriptFile {
         if let Ok(file) = File::open(script) {
             for mut line in io::BufReader::new(file).lines().skip(1).flatten() {
                 if line.starts_with('#') {
-                    line.retain(|c| c != '#');
-                    line = line.trim().to_string();
+                    line = line[1..].trim().to_string();
                     line.push('\n');
                     lines_buf.push_str(&line);
                 } else {
@@ -402,6 +401,21 @@ impl ScriptConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn script_headers_preserve_literal_hash_characters() {
+        let fixture =
+            std::env::temp_dir().join(format!("rustscan-literal-hash-{}.txt", std::process::id()));
+        fs::write(&fixture, "#!/usr/bin/env python3\n#tags = [\"C#\"]\n#call_format = \"fixture {{ip}} {{port}} https://example.invalid/#section\"\n\n").unwrap();
+        let parsed = ScriptFile::new(fixture.clone());
+        fs::remove_file(fixture).unwrap();
+        let parsed = parsed.expect("valid TOML metadata");
+        assert_eq!(parsed.tags, Some(vec!["C#".to_owned()]));
+        assert_eq!(
+            parsed.call_format.as_deref(),
+            Some("fixture {{ip}} {{port}} https://example.invalid/#section")
+        );
+    }
 
     #[test]
     fn find_and_parse_scripts() {
