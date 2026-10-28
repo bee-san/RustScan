@@ -120,30 +120,38 @@ pub fn init_scripts(scripts: &ScriptsRequired) -> Result<Vec<ScriptFile>> {
             let parsed_scripts = parse_scripts(script_paths);
             debug!("Scripts parsed \n{parsed_scripts:?}");
 
-            // Only Scripts that contain all the tags found in ScriptConfig will be selected.
-            if let Some(config_hashset) = script_config.tags {
-                for script in parsed_scripts {
-                    if let Some(script_hashset) = &script.tags {
-                        if script_hashset
-                            .iter()
-                            .all(|tag| config_hashset.contains(tag))
-                        {
-                            scripts_to_run.push(script);
-                        } else {
-                            debug!(
-                                "\nScript tags does not match config tags {:?} {}",
-                                script_hashset,
-                                script.path.unwrap().display()
-                            );
-                        }
-                    }
-                }
-            }
+            scripts_to_run = select_scripts(parsed_scripts, script_config.tags.as_deref());
             debug!("\nScript(s) to run {scripts_to_run:?}");
         }
     }
 
     Ok(scripts_to_run)
+}
+
+// Keep tag selection independent of the user's home-directory configuration.
+fn select_scripts(scripts: Vec<ScriptFile>, required_tags: Option<&[String]>) -> Vec<ScriptFile> {
+    let Some(required_tags) = required_tags else {
+        return Vec::new();
+    };
+    scripts
+        .into_iter()
+        .filter(|script| {
+            script.tags.as_ref().is_some_and(|tags| {
+                let matches = required_tags.iter().all(|tag| tags.contains(tag));
+                if !matches {
+                    debug!(
+                        "\nScript tags does not match config tags {:?} {}",
+                        tags,
+                        script
+                            .path
+                            .as_ref()
+                            .map_or_else(String::new, |path| path.display().to_string())
+                    );
+                }
+                matches
+            })
+        })
+        .collect()
 }
 
 pub fn parse_scripts(scripts: Vec<PathBuf>) -> Vec<ScriptFile> {
@@ -402,6 +410,48 @@ impl ScriptConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_tags_are_required_and_additional_script_tags_are_allowed() {
+        // These are parsed metadata only; no script is executed.
+        let script = |tags: &str| {
+            toml::from_str::<ScriptFile>(&format!(
+                "tags = {tags}\ncall_format = \"fixture {{{{ip}}}} {{{{port}}}}\"\n"
+            ))
+            .unwrap()
+        };
+        let scripts = vec![
+            script(r#"["core_approved", "example", "extra"]"#),
+            script(r#"["core_approved"]"#),
+            script(r#"["unrelated"]"#),
+        ];
+        let config: ScriptConfig =
+            toml::from_str(r#"tags = ["core_approved", "example"]"#).unwrap();
+        let selected = select_scripts(scripts, config.tags.as_deref());
+        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            selected[0].tags.as_deref(),
+            Some(
+                [
+                    "core_approved".to_owned(),
+                    "example".to_owned(),
+                    "extra".to_owned()
+                ]
+                .as_slice()
+            )
+        );
+    }
+
+    #[test]
+    fn tag_selection_keeps_empty_and_absent_configuration_explicit() {
+        let tagged: ScriptFile = toml::from_str(r#"tags = ["example"]"#).unwrap();
+        let untagged: ScriptFile = toml::from_str("").unwrap();
+        // No selection configured keeps the existing opt-in behavior.
+        assert!(select_scripts(vec![tagged.clone(), untagged.clone()], None).is_empty());
+        // An explicitly empty list requires no tags, but files without any
+        // tag metadata remain excluded as before.
+        assert_eq!(select_scripts(vec![tagged, untagged], Some(&[])).len(), 1);
+    }
 
     #[test]
     fn find_and_parse_scripts() {
