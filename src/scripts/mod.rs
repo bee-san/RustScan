@@ -143,7 +143,76 @@ pub fn init_scripts(scripts: &ScriptsRequired) -> Result<Vec<ScriptFile>> {
         }
     }
 
+    verify_script_programs(&scripts_to_run)?;
+
     Ok(scripts_to_run)
+}
+
+/// Whether `path/program` is something the shell could run.
+#[cfg(not(windows))]
+fn program_exists_in(dir: &std::path::Path, program: &str) -> bool {
+    dir.join(program).is_file()
+}
+
+/// Whether `path/program` is something `cmd.exe` could run, which appends
+/// entries from `PATHEXT` to a bare name.
+#[cfg(windows)]
+fn program_exists_in(dir: &std::path::Path, program: &str) -> bool {
+    if dir.join(program).is_file() {
+        return true;
+    }
+    let extensions = std::env::var("PATHEXT").unwrap_or_default();
+    extensions
+        .split(';')
+        .filter(|extension| !extension.is_empty())
+        .any(|extension| dir.join(format!("{program}{extension}")).is_file())
+}
+
+fn program_is_available(program: &str) -> bool {
+    match std::env::var_os("PATH") {
+        Some(path) => std::env::split_paths(&path).any(|dir| program_exists_in(&dir, program)),
+        None => false,
+    }
+}
+
+/// Check that the program each selected script starts with is available.
+///
+/// Scripts run through `sh -c`, so a missing binary surfaces only as a bare
+/// "Exit code = 127" once the scan has already finished. Report it up front
+/// instead, before a long scan has been wasted.
+fn verify_script_programs(scripts_to_run: &[ScriptFile]) -> Result<()> {
+    for script in scripts_to_run {
+        let call_format = match &script.call_format {
+            Some(call_format) => call_format,
+            None => continue,
+        };
+        let program = match call_format.split_whitespace().next() {
+            Some(program) => program,
+            None => continue,
+        };
+        // A leading assignment (`FOO=bar nmap ...`) or an absolute path is not
+        // a bare program name, and `{{...}}` placeholders are only filled in
+        // when the script actually runs, so leave those formats alone.
+        if program.contains('=')
+            || program.contains('/')
+            || program.contains('$')
+            || program.contains("{{")
+        {
+            continue;
+        }
+        if !program_is_available(program) {
+            return Err(anyhow!(
+                "The script `{}` runs `{}`, which is not installed or not in PATH. \
+                 Install it, or skip scripts with `--scripts none`.",
+                script
+                    .path
+                    .as_ref()
+                    .map_or_else(|| "default".to_string(), |path| path.display().to_string()),
+                program
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn parse_scripts(scripts: Vec<PathBuf>) -> Vec<ScriptFile> {
@@ -494,5 +563,41 @@ mod tests {
         };
 
         assert_eq!(script_dir_base, dirs::home_dir().unwrap());
+    }
+
+    fn script_with_call_format(call_format: &str) -> ScriptFile {
+        ScriptFile {
+            path: Some(PathBuf::from("/tmp/script.txt")),
+            tags: None,
+            developer: None,
+            port: None,
+            ports_separator: None,
+            call_format: Some(call_format.to_string()),
+        }
+    }
+
+    #[test]
+    fn missing_script_program_is_reported() {
+        let scripts = vec![script_with_call_format("definitely-not-a-real-binary {{ip}}")];
+        let err = verify_script_programs(&scripts).unwrap_err();
+        assert!(err.to_string().contains("definitely-not-a-real-binary"));
+    }
+
+    #[test]
+    fn available_script_program_is_accepted() {
+        // `sh` is what the scripts are actually run through, so it is present
+        // on every platform that can execute them.
+        let scripts = vec![script_with_call_format("sh -c true {{ip}}")];
+        assert!(verify_script_programs(&scripts).is_ok());
+    }
+
+    #[test]
+    fn placeholder_and_assignment_prefixes_are_skipped() {
+        let scripts = vec![
+            script_with_call_format("{{script}} {{ip}} {{port}}"),
+            script_with_call_format("FOO=bar definitely-not-a-real-binary"),
+            script_with_call_format("/opt/custom/nmap {{ip}}"),
+        ];
+        assert!(verify_script_programs(&scripts).is_ok());
     }
 }
