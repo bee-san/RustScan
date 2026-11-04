@@ -128,20 +128,7 @@ fn main() {
         map.entry(socket.ip()).or_default().push(socket.port());
     }
 
-    for ip in ips {
-        if ports_per_ip.contains_key(&ip) {
-            continue;
-        }
-
-        // If we got here it means the IP was not found within the HashMap, this
-        // means the scan couldn't find any open ports for it.
-
-        let x = format!("Looks like I didn't find any open ports for {:?}. This is usually caused by a high batch size.
-        \n*I used {} batch size, consider lowering it with {} or a comfortable number for your system.
-        \n Alternatively, increase the timeout if your ping is high. Rustscan -t 2000 for 2000 milliseconds (2s) timeout.\n",
-        ip,
-        batch_size,
-        "'rustscan -b <batch_size> -a <ip address>'");
+    if let Some(x) = no_open_ports_warning(&ips, &ports_per_ip, &closed_ports_per_ip, batch_size) {
         warning!(x, opts.greppable, opts.accessible);
     }
 
@@ -222,6 +209,35 @@ fn main() {
     benchmarks.push(rustscan_bench);
     debug!("Benchmarks raw {benchmarks:?}");
     info!("{}", benchmarks.summary());
+}
+
+/// Builds the hint printed when the scan found no open ports.
+///
+/// A host without open ports is normal when another host answered (a subnet
+/// sweep for one port): replies got through at this batch size and timeout,
+/// so batch size and timeout are unlikely to be the cause. The hint is printed
+/// once, and only when no host answered with an open or, under `--closed`, a
+/// closed port.
+fn no_open_ports_warning(
+    ips: &[IpAddr],
+    ports_per_ip: &HashMap<IpAddr, Vec<u16>>,
+    closed_ports_per_ip: &HashMap<IpAddr, Vec<u16>>,
+    batch_size: usize,
+) -> Option<String> {
+    if !ports_per_ip.is_empty() || !closed_ports_per_ip.is_empty() {
+        return None;
+    }
+
+    let target = match ips {
+        [ip] => format!("for {ip:?}"),
+        _ => format!("on any of the {} addresses", ips.len()),
+    };
+    Some(format!("Looks like I didn't find any open ports {}. This is usually caused by a high batch size.
+        \n*I used {} batch size, consider lowering it with {} or a comfortable number for your system.
+        \n Alternatively, increase the timeout if your ping is high. Rustscan -t 2000 for 2000 milliseconds (2s) timeout.\n",
+        target,
+        batch_size,
+        "'rustscan -b <batch_size> -a <ip address>'"))
 }
 
 /// Determines the actual batch size used by the scanner.
@@ -373,7 +389,48 @@ mod tests {
     use super::effective_batch_size;
     #[cfg(unix)]
     use super::{adjust_ulimit_size, infer_batch_size};
-    use super::{print_opening, Opts};
+    use super::{no_open_ports_warning, print_opening, Opts};
+    use std::collections::HashMap;
+    use std::net::IpAddr;
+
+    fn hosts(n: u8) -> Vec<IpAddr> {
+        (1..=n).map(|i| IpAddr::from([192, 0, 2, i])).collect()
+    }
+
+    #[test]
+    fn no_open_ports_silent_when_another_host_answered() {
+        // Sweeping a subnet for one port: one host has it open, the rest do not.
+        let ips = hosts(254);
+        let ports_per_ip = HashMap::from([(ips[0], vec![22])]);
+
+        assert!(no_open_ports_warning(&ips, &ports_per_ip, &HashMap::new(), 4500).is_none());
+    }
+
+    #[test]
+    fn no_open_ports_silent_when_a_host_answered_closed() {
+        // With --closed, a refused connection also proves replies get through.
+        let ips = hosts(254);
+        let closed_ports_per_ip = HashMap::from([(ips[0], vec![443])]);
+
+        assert!(no_open_ports_warning(&ips, &HashMap::new(), &closed_ports_per_ip, 4500).is_none());
+    }
+
+    #[test]
+    fn no_open_ports_warns_once_when_nothing_found() {
+        let warning = no_open_ports_warning(&hosts(254), &HashMap::new(), &HashMap::new(), 4500);
+
+        let warning = warning.expect("one hint when nothing was found");
+        assert!(warning.contains("on any of the 254 addresses."));
+        assert!(warning.contains("4500 batch size"));
+    }
+
+    #[test]
+    fn no_open_ports_names_the_single_host() {
+        let warning = no_open_ports_warning(&hosts(1), &HashMap::new(), &HashMap::new(), 4500);
+
+        let warning = warning.expect("one hint for the single host");
+        assert!(warning.contains("for 192.0.2.1."));
+    }
 
     #[test]
     #[cfg(unix)]
