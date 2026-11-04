@@ -25,8 +25,11 @@ pub enum ScanOrder {
 ///   - custom will read the ScriptConfig file and the available scripts in the predefined folders
 #[derive(Deserialize, Debug, ValueEnum, Clone, PartialEq, Eq, Copy)]
 pub enum ScriptsRequired {
+    #[serde(alias = "none")]
     None,
+    #[serde(alias = "default")]
     Default,
+    #[serde(alias = "custom")]
     Custom,
 }
 
@@ -523,6 +526,55 @@ mod tests {
                 closed: Some(false),
                 interval: None,
             }
+        }
+    }
+
+    fn assert_config_script_mode(value: &str, expected: ScriptsRequired) {
+        let config: Config = toml::from_str(&format!("scripts = \"{value}\""))
+            .expect("documented script mode must deserialize");
+        assert_eq!(config.scripts, Some(expected));
+    }
+
+    #[test]
+    fn config_scripts_lowercase_none() {
+        assert_config_script_mode("none", ScriptsRequired::None);
+    }
+
+    #[test]
+    fn config_scripts_lowercase_default() {
+        assert_config_script_mode("default", ScriptsRequired::Default);
+    }
+
+    #[test]
+    fn config_scripts_lowercase_custom() {
+        assert_config_script_mode("custom", ScriptsRequired::Custom);
+    }
+
+    #[test]
+    fn config_scripts_legacy_and_unknown_controls() {
+        assert_config_script_mode("None", ScriptsRequired::None);
+        assert_config_script_mode("Default", ScriptsRequired::Default);
+        assert_config_script_mode("Custom", ScriptsRequired::Custom);
+        for invalid in ["disabled", "unknown", ""] {
+            assert!(toml::from_str::<Config>(&format!("scripts = \"{invalid}\"")).is_err());
+        }
+    }
+
+    #[test]
+    fn config_read_accepts_documented_lowercase_script_modes() {
+        for (value, expected) in [
+            ("none", ScriptsRequired::None),
+            ("default", ScriptsRequired::Default),
+            ("custom", ScriptsRequired::Custom),
+        ] {
+            let fixture = std::env::temp_dir().join(format!(
+                "rustscan-config-scripts-{}-{value}.toml",
+                std::process::id()
+            ));
+            std::fs::write(&fixture, format!("scripts = \"{value}\"\n")).unwrap();
+            let config = Config::read(Some(fixture.clone()));
+            std::fs::remove_file(fixture).unwrap();
+            assert_eq!(config.scripts, Some(expected));
         }
     }
 
