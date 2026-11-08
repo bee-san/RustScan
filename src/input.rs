@@ -204,7 +204,8 @@ pub struct Opts {
     #[arg(long, value_enum, ignore_case = true, default_value = "default")]
     pub scripts: ScriptsRequired,
 
-    /// Use the top 1000 ports.
+    /// Scan the top ports from the config file's `ports` list instead of
+    /// the full range. Explicit `--ports`/`--range` take precedence.
     #[arg(long)]
     pub top: bool,
 
@@ -342,12 +343,34 @@ impl Opts {
             }
         }
 
-        // Only use top ports when the user asks for them
-        if self.top && config.ports.is_some() {
-            self.ports = config.ports.clone();
-        }
+        self.merge_top_ports(config);
 
         merge_optional!(range, resolver, ulimit, exclude_ports, exclude_addresses);
+    }
+
+    /// Applies the config file's port list when `--top` is set.
+    ///
+    /// Explicit `-p/--ports` or `-r/--range` on the command line always win
+    /// over the config file (see #947); `--top` only fills in ports when the
+    /// user did not name any. When `--top` is set but no port list is in
+    /// effect at all, the scan would silently cover the full range, so warn
+    /// about that instead of pretending the top ports are scanned.
+    fn merge_top_ports(&mut self, config: &Config) {
+        if !self.top {
+            return;
+        }
+        if self.cli_args.contains("ports") || self.cli_args.contains("range") {
+            return;
+        }
+        if let Some(ports) = &config.ports {
+            self.ports = Some(ports.clone());
+        } else if self.ports.is_none() {
+            crate::warning!(
+                "--top was set but the config file has no `ports` list; scanning the full port range instead.",
+                self.greppable,
+                self.accessible
+            );
+        }
     }
 }
 
@@ -878,5 +901,63 @@ mod tests {
 
         let opts = Opts::parse_from(["rustscan", "-a", "127.0.0.1"]);
         assert_eq!(opts.interval, 0);
+    }
+
+    fn config_with_top_ports() -> Config {
+        toml::from_str("ports = [80, 443, 8080]").unwrap()
+    }
+
+    #[test]
+    fn top_uses_config_ports_when_no_cli_ports_given() {
+        let mut opts = Opts::try_read_from(["rustscan", "-a", "127.0.0.1", "--top"]).unwrap();
+
+        opts.merge(&config_with_top_ports());
+
+        assert_eq!(opts.ports, Some(vec![80, 443, 8080]));
+    }
+
+    #[test]
+    fn top_yields_to_cli_ports() {
+        // Regression test: the config list used to silently override `-p`,
+        // contradicting the CLI-wins rule from #947.
+        let mut opts =
+            Opts::try_read_from(["rustscan", "-a", "127.0.0.1", "--top", "-p", "22,25"]).unwrap();
+
+        opts.merge(&config_with_top_ports());
+
+        assert_eq!(opts.ports, Some(vec![22, 25]));
+    }
+
+    #[test]
+    fn top_yields_to_cli_range() {
+        let mut opts =
+            Opts::try_read_from(["rustscan", "-a", "127.0.0.1", "--top", "-r", "1-100"]).unwrap();
+
+        opts.merge(&config_with_top_ports());
+
+        assert_eq!(opts.ports, None);
+        assert_eq!(opts.range, Some(PortRanges(vec![(1, 100)])));
+    }
+
+    #[test]
+    fn top_without_config_ports_falls_back_to_full_range() {
+        let mut opts = Opts::try_read_from(["rustscan", "-a", "127.0.0.1", "--top"]).unwrap();
+        let config: Config = toml::from_str("batch_size = 100").unwrap();
+
+        opts.merge(&config);
+
+        // Nothing to scan top ports from: the CLI default full range applies.
+        // (A warning is printed; stdout is not asserted here.)
+        assert_eq!(opts.ports, None);
+        assert_eq!(opts.range, Some(PortRanges(vec![(1, 65_535)])));
+    }
+
+    #[test]
+    fn config_ports_ignored_without_top() {
+        let mut opts = Opts::try_read_from(["rustscan", "-a", "127.0.0.1"]).unwrap();
+
+        opts.merge(&config_with_top_ports());
+
+        assert_eq!(opts.ports, None);
     }
 }
