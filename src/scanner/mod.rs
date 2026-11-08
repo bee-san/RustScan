@@ -1,7 +1,7 @@
 //! Core functionality for actual scanning behaviour.
 use crate::generated::get_parsed_data;
 use crate::port_strategy::PortStrategy;
-use crate::tui::println_safe;
+use crate::tui::{colors_enabled, println_safe};
 use log::debug;
 
 mod socket_iterator;
@@ -527,7 +527,7 @@ impl Scanner {
     /// Formats and prints the port status
     fn fmt_ports(&self, socket: SocketAddr) {
         if self.print_open_ports && !self.greppable {
-            if self.accessible {
+            if self.accessible || !colors_enabled() {
                 println_safe(format_args!("Open {socket}"));
             } else {
                 println_safe(format_args!("Open {}", socket.to_string().purple()));
@@ -538,7 +538,7 @@ impl Scanner {
     /// Prints a closed port (CLI output only, never in greppable mode).
     fn fmt_closed_port(&self, socket: SocketAddr) {
         if self.print_open_ports && !self.greppable {
-            if self.accessible {
+            if self.accessible || !colors_enabled() {
                 println_safe(format_args!("Closed {socket}"));
             } else {
                 println_safe(format_args!("Closed {}", socket.to_string().red()));

@@ -7,7 +7,7 @@ use rustscan::input::{self, Config, Opts, ScriptsRequired};
 use rustscan::port_strategy::PortStrategy;
 use rustscan::scanner::{PortStatus, Scanner};
 use rustscan::scripts::{init_scripts, Script, ScriptFile};
-use rustscan::tui::println_safe;
+use rustscan::tui::{colors_enabled, println_safe};
 use rustscan::{detail, funny_opening, output, warning};
 
 use colorful::{Color, Colorful};
@@ -286,12 +286,20 @@ fn print_opening(opts: &Opts) {
 `-' `-'`-----'`----'  `-'  `----'  `---' `-'  `-'`-' `-'
 The Modern Day Port Scanner."#;
 
-    println_safe(format_args!("{}", s.gradient(Color::Green).bold()));
+    if colors_enabled() {
+        println_safe(format_args!("{}", s.gradient(Color::Green).bold()));
+    } else {
+        println_safe(format_args!("{s}"));
+    }
     let info = r#"________________________________________
 : http://discord.skerritt.blog         :
 : https://github.com/RustScan/RustScan :
  --------------------------------------"#;
-    println_safe(format_args!("{}", info.gradient(Color::Yellow).bold()));
+    if colors_enabled() {
+        println_safe(format_args!("{}", info.gradient(Color::Yellow).bold()));
+    } else {
+        println_safe(format_args!("{info}"));
+    }
     funny_opening!();
 
     let config_path = opts
