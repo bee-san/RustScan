@@ -17,27 +17,32 @@ pub enum PortStrategy {
 }
 
 impl PortStrategy {
+    /// Picks a strategy from an optional range and an optional port list.
+    ///
+    /// An explicit port list always wins over the range. When the caller
+    /// passes neither (the CLI never does this, it defaults the range, but
+    /// library callers can), the full `1-65535` range is scanned instead of
+    /// panicking.
     pub fn pick(range: &Option<PortRanges>, ports: Option<Vec<u16>>, order: ScanOrder) -> Self {
+        if let Some(ports) = ports {
+            return match order {
+                ScanOrder::Serial => PortStrategy::Manual(ports),
+                ScanOrder::Random => {
+                    let mut rng = rng();
+                    let mut ports = ports;
+                    ports.shuffle(&mut rng);
+                    PortStrategy::Manual(ports)
+                }
+            };
+        }
+        // No explicit ports: scan the range, or the full range when the
+        // caller gave neither, mirroring the CLI default in `Opts`.
+        let ranges = range
+            .as_ref()
+            .map_or(vec![(1, 65535)], |port_ranges| port_ranges.0.clone());
         match order {
-            ScanOrder::Serial if ports.is_none() => {
-                let port_ranges = range.as_ref().unwrap();
-                PortStrategy::Serial(SerialRange {
-                    range: port_ranges.0.clone(),
-                })
-            }
-            ScanOrder::Random if ports.is_none() => {
-                let port_ranges = range.as_ref().unwrap();
-                PortStrategy::Random(RandomRange {
-                    range: port_ranges.0.clone(),
-                })
-            }
-            ScanOrder::Serial => PortStrategy::Manual(ports.unwrap()),
-            ScanOrder::Random => {
-                let mut rng = rng();
-                let mut ports = ports.unwrap();
-                ports.shuffle(&mut rng);
-                PortStrategy::Manual(ports)
-            }
+            ScanOrder::Serial => PortStrategy::Serial(SerialRange { range: ranges }),
+            ScanOrder::Random => PortStrategy::Random(RandomRange { range: ranges }),
         }
     }
 
@@ -146,5 +151,40 @@ mod tests {
 
         result.sort_unstable();
         assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn pick_with_neither_range_nor_ports_scans_full_range_serial() {
+        let strategy = PortStrategy::pick(&None, None, ScanOrder::Serial);
+        let result = strategy.order();
+
+        assert_eq!(result.len(), 65_535);
+        assert_eq!(result[0], 1);
+        assert_eq!(result[65_534], 65_535);
+    }
+
+    #[test]
+    fn pick_with_neither_range_nor_ports_scans_full_range_random() {
+        let strategy = PortStrategy::pick(&None, None, ScanOrder::Random);
+        let mut result = strategy.order();
+        assert_eq!(result.len(), 65_535);
+
+        result.sort_unstable();
+        assert_eq!(result, (1..=65_535).collect::<Vec<u16>>());
+    }
+
+    #[test]
+    fn pick_with_empty_ports_stays_manual() {
+        let strategy = PortStrategy::pick(&None, Some(Vec::new()), ScanOrder::Serial);
+
+        assert!(strategy.order().is_empty());
+    }
+
+    #[test]
+    fn pick_with_both_ports_and_range_prefers_ports() {
+        let ranges = PortRanges(vec![(1u16, 10u16)]);
+        let strategy = PortStrategy::pick(&Some(ranges), Some(vec![80, 443]), ScanOrder::Serial);
+
+        assert_eq!(strategy.order(), vec![80, 443]);
     }
 }
