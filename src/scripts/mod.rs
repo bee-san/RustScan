@@ -314,8 +314,14 @@ impl Script {
         let mut to_run = String::new();
 
         if final_call_format.contains("{{script}}") {
+            let script_path = self.path.as_ref().ok_or_else(|| {
+                anyhow!("Script format uses {{{{script}}}} but the script has no file path.")
+            })?;
+            let script_path = script_path.to_str().ok_or_else(|| {
+                anyhow!("Script path {} is not valid UTF-8.", script_path.display())
+            })?;
             let exec_parts_script: ExecPartsScript = ExecPartsScript {
-                script: self.path.unwrap().to_str().unwrap().to_string(),
+                script: script_path.to_string(),
                 ip: self.ip.to_string(),
                 port: ports_str,
                 ipversion: match &self.ip {
@@ -338,6 +344,26 @@ impl Script {
         debug!("\nScript format to run {to_run}");
         execute_script(&to_run)
     }
+}
+
+/// Builds the error for a script that exited non-zero.
+///
+/// A bare exit code never explains the failure (the opacity behind #513's
+/// back-and-forth), so the child's stderr is appended, trimmed and bounded.
+/// Empty stderr keeps the historical `Exit code = N` message unchanged.
+fn script_failure_message(code: i32, stderr: &[u8]) -> String {
+    const MAX_STDERR_CHARS: usize = 500;
+
+    let stderr = String::from_utf8_lossy(stderr);
+    let stderr = stderr.trim();
+    if stderr.is_empty() {
+        return format!("Exit code = {code}");
+    }
+    let mut shown: String = stderr.chars().take(MAX_STDERR_CHARS).collect();
+    if stderr.chars().count() > MAX_STDERR_CHARS {
+        shown.push('…');
+    }
+    format!("Exit code = {code}: {shown}")
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -375,7 +401,7 @@ fn execute_script(script: &str) -> Result<String> {
             };
 
             if es != 0 {
-                return Err(anyhow!("Exit code = {}", es));
+                return Err(anyhow!("{}", script_failure_message(es, &output.stderr)));
             }
             Ok(String::from_utf8_lossy(&output.stdout).into_owned())
         }
@@ -613,5 +639,68 @@ mod tests {
             script_with_call_format("/opt/custom/nmap {{ip}}"),
         ];
         assert!(verify_script_programs(&scripts).is_ok());
+    }
+
+    #[test]
+    fn script_failure_message_keeps_bare_exit_code_for_empty_stderr() {
+        assert_eq!(script_failure_message(2, b""), "Exit code = 2");
+        assert_eq!(script_failure_message(127, b"  \n "), "Exit code = 127");
+    }
+
+    #[test]
+    fn script_failure_message_appends_trimmed_stderr() {
+        let message = script_failure_message(2, b"python: can't open file 'x.py'\n");
+
+        assert_eq!(message, "Exit code = 2: python: can't open file 'x.py'");
+    }
+
+    #[test]
+    fn script_failure_message_bounds_long_and_lossy_stderr() {
+        let long = "e".repeat(600);
+        let message = script_failure_message(1, long.as_bytes());
+
+        assert!(message.starts_with("Exit code = 1: "));
+        assert!(message.ends_with('…'));
+        assert_eq!(message.chars().count(), "Exit code = 1: ".len() + 500 + 1);
+
+        // Invalid UTF-8 must not panic; it degrades to replacement characters.
+        let message = script_failure_message(1, b"bad \xff bytes");
+        assert!(message.contains("bad � bytes"));
+    }
+
+    #[test]
+    fn script_run_without_path_returns_error_instead_of_panicking() {
+        // Returns before any template is executed, so no process is spawned.
+        let script = Script::build(
+            None,
+            "127.0.0.1".parse().unwrap(),
+            vec![80],
+            None,
+            None,
+            None,
+            Some("run {{script}} {{ip}} {{port}}".to_owned()),
+        );
+
+        let err = script.run().unwrap_err();
+        assert!(err.to_string().contains("no file path"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn script_run_with_non_utf8_path_returns_error() {
+        use std::os::unix::ffi::OsStrExt;
+        let bad_path = PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/\xffbad.txt"));
+        let script = Script::build(
+            Some(bad_path),
+            "127.0.0.1".parse().unwrap(),
+            vec![80],
+            None,
+            None,
+            None,
+            Some("run {{script}} {{ip}} {{port}}".to_owned()),
+        );
+
+        let err = script.run().unwrap_err();
+        assert!(err.to_string().contains("not valid UTF-8"));
     }
 }
