@@ -48,21 +48,40 @@ fn colors_enabled_for(no_color: Option<&std::ffi::OsStr>) -> bool {
     no_color.is_none_or(|value| value.is_empty())
 }
 
+/// Prints one of two pre-rendered lines depending on `NO_COLOR`.
+///
+/// For call sites like the startup banner where the colored and plain
+/// renderings differ by more than a tag.
+pub fn print_colored_or_plain(colored: impl std::fmt::Display, plain: impl std::fmt::Display) {
+    if colors_enabled() {
+        println_safe(format_args!("{colored}"));
+    } else {
+        println_safe(format_args!("{plain}"));
+    }
+}
+
+/// Prints `tag name`, colored unless `NO_COLOR` is set.
+///
+/// Shared by the status macros below.
+pub fn print_tagged(
+    painted_tag: impl std::fmt::Display,
+    plain_tag: &str,
+    name: impl std::fmt::Display,
+) {
+    if colors_enabled() {
+        println_safe(format_args!("{painted_tag} {name}"));
+    } else {
+        // NO_COLOR: keep the tag, drop the escape codes.
+        println_safe(format_args!("{plain_tag} {name}"));
+    }
+}
+
 /// Terminal User Interface Module for RustScan
 /// Defines macros to use
 #[macro_export]
 macro_rules! warning {
     ($name:expr) => {
-        if $crate::tui::colors_enabled() {
-            $crate::tui::println_safe(format_args!(
-                "{} {}",
-                ansi_term::Colour::Red.bold().paint("[!]"),
-                $name
-            ));
-        } else {
-            // NO_COLOR: keep the tag, drop the escape codes.
-            $crate::tui::println_safe(format_args!("[!] {}", $name));
-        }
+        $crate::tui::print_tagged(ansi_term::Colour::Red.bold().paint("[!]"), "[!]", $name);
     };
     ($name:expr, $greppable:expr, $accessible:expr) => {
         // if not greppable then print, otherwise no else statement so do not print.
@@ -70,15 +89,8 @@ macro_rules! warning {
             if $accessible {
                 // Don't print the ascii art
                 $crate::tui::println_safe(format_args!("{}", $name));
-            } else if $crate::tui::colors_enabled() {
-                $crate::tui::println_safe(format_args!(
-                    "{} {}",
-                    ansi_term::Colour::Red.bold().paint("[!]"),
-                    $name
-                ));
             } else {
-                // NO_COLOR: keep the tag, drop the escape codes.
-                $crate::tui::println_safe(format_args!("[!] {}", $name));
+                $crate::tui::print_tagged(ansi_term::Colour::Red.bold().paint("[!]"), "[!]", $name);
             }
         }
     };
@@ -87,16 +99,7 @@ macro_rules! warning {
 #[macro_export]
 macro_rules! detail {
     ($name:expr) => {
-        if $crate::tui::colors_enabled() {
-            $crate::tui::println_safe(format_args!(
-                "{} {}",
-                ansi_term::Colour::Blue.bold().paint("[~]"),
-                $name
-            ));
-        } else {
-            // NO_COLOR: keep the tag, drop the escape codes.
-            $crate::tui::println_safe(format_args!("[~] {}", $name));
-        }
+        $crate::tui::print_tagged(ansi_term::Colour::Blue.bold().paint("[~]"), "[~]", $name);
     };
     ($name:expr, $greppable:expr, $accessible:expr) => {
         // if not greppable then print, otherwise no else statement so do not print.
@@ -104,15 +107,12 @@ macro_rules! detail {
             if $accessible {
                 // Don't print the ascii art
                 $crate::tui::println_safe(format_args!("{}", $name));
-            } else if $crate::tui::colors_enabled() {
-                $crate::tui::println_safe(format_args!(
-                    "{} {}",
-                    ansi_term::Colour::Blue.bold().paint("[~]"),
-                    $name
-                ));
             } else {
-                // NO_COLOR: keep the tag, drop the escape codes.
-                $crate::tui::println_safe(format_args!("[~] {}", $name));
+                $crate::tui::print_tagged(
+                    ansi_term::Colour::Blue.bold().paint("[~]"),
+                    "[~]",
+                    $name,
+                );
             }
         }
     };
@@ -121,16 +121,11 @@ macro_rules! detail {
 #[macro_export]
 macro_rules! output {
     ($name:expr) => {
-        if $crate::tui::colors_enabled() {
-            $crate::tui::println_safe(format_args!(
-                "{} {}",
-                ansi_term::Colour::RGB(0, 255, 9).bold().paint("[>]"),
-                $name
-            ));
-        } else {
-            // NO_COLOR: keep the tag, drop the escape codes.
-            $crate::tui::println_safe(format_args!("[>] {}", $name));
-        }
+        $crate::tui::print_tagged(
+            ansi_term::Colour::RGB(0, 255, 9).bold().paint("[>]"),
+            "[>]",
+            $name,
+        );
     };
     ($name:expr, $greppable:expr, $accessible:expr) => {
         // if not greppable then print, otherwise no else statement so do not print.
@@ -138,15 +133,12 @@ macro_rules! output {
             if $accessible {
                 // Don't print the ascii art
                 $crate::tui::println_safe(format_args!("{}", $name));
-            } else if $crate::tui::colors_enabled() {
-                $crate::tui::println_safe(format_args!(
-                    "{} {}",
-                    ansi_term::Colour::RGB(0, 255, 9).bold().paint("[>]"),
-                    $name
-                ));
             } else {
-                // NO_COLOR: keep the tag, drop the escape codes.
-                $crate::tui::println_safe(format_args!("[>] {}", $name));
+                $crate::tui::print_tagged(
+                    ansi_term::Colour::RGB(0, 255, 9).bold().paint("[>]"),
+                    "[>]",
+                    $name,
+                );
             }
         }
     };
