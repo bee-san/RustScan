@@ -27,16 +27,61 @@ pub fn println_safe(args: std::fmt::Arguments<'_>) {
     }
 }
 
+/// Whether colored output is enabled.
+///
+/// Honors the `NO_COLOR` convention (<https://no-color.org>): when the
+/// variable is present and non-empty, colors are disabled. This keeps the
+/// banner and status tags readable on light terminal themes and for tools
+/// that cannot parse escape codes (see issue #778).
+///
+/// The environment is read on every call so embedders never observe stale
+/// state; output paths are cold enough that the lookup cost does not matter.
+pub fn colors_enabled() -> bool {
+    colors_enabled_for(std::env::var_os("NO_COLOR").as_deref())
+}
+
+/// Pure form of [`colors_enabled`] over the variable's value, for tests.
+///
+/// `None` (unset) and `Some("")` (empty) both mean colors stay on; any other
+/// value disables them.
+fn colors_enabled_for(no_color: Option<&std::ffi::OsStr>) -> bool {
+    no_color.is_none_or(|value| value.is_empty())
+}
+
+/// Prints one of two pre-rendered lines depending on `NO_COLOR`.
+///
+/// For call sites like the startup banner where the colored and plain
+/// renderings differ by more than a tag.
+pub fn print_colored_or_plain(colored: impl std::fmt::Display, plain: impl std::fmt::Display) {
+    if colors_enabled() {
+        println_safe(format_args!("{colored}"));
+    } else {
+        println_safe(format_args!("{plain}"));
+    }
+}
+
+/// Prints `tag name`, colored unless `NO_COLOR` is set.
+///
+/// Shared by the status macros below.
+pub fn print_tagged(
+    painted_tag: impl std::fmt::Display,
+    plain_tag: &str,
+    name: impl std::fmt::Display,
+) {
+    if colors_enabled() {
+        println_safe(format_args!("{painted_tag} {name}"));
+    } else {
+        // NO_COLOR: keep the tag, drop the escape codes.
+        println_safe(format_args!("{plain_tag} {name}"));
+    }
+}
+
 /// Terminal User Interface Module for RustScan
 /// Defines macros to use
 #[macro_export]
 macro_rules! warning {
     ($name:expr) => {
-        $crate::tui::println_safe(format_args!(
-            "{} {}",
-            ansi_term::Colour::Red.bold().paint("[!]"),
-            $name
-        ));
+        $crate::tui::print_tagged(ansi_term::Colour::Red.bold().paint("[!]"), "[!]", $name);
     };
     ($name:expr, $greppable:expr, $accessible:expr) => {
         // if not greppable then print, otherwise no else statement so do not print.
@@ -45,11 +90,7 @@ macro_rules! warning {
                 // Don't print the ascii art
                 $crate::tui::println_safe(format_args!("{}", $name));
             } else {
-                $crate::tui::println_safe(format_args!(
-                    "{} {}",
-                    ansi_term::Colour::Red.bold().paint("[!]"),
-                    $name
-                ));
+                $crate::tui::print_tagged(ansi_term::Colour::Red.bold().paint("[!]"), "[!]", $name);
             }
         }
     };
@@ -58,11 +99,7 @@ macro_rules! warning {
 #[macro_export]
 macro_rules! detail {
     ($name:expr) => {
-        $crate::tui::println_safe(format_args!(
-            "{} {}",
-            ansi_term::Colour::Blue.bold().paint("[~]"),
-            $name
-        ));
+        $crate::tui::print_tagged(ansi_term::Colour::Blue.bold().paint("[~]"), "[~]", $name);
     };
     ($name:expr, $greppable:expr, $accessible:expr) => {
         // if not greppable then print, otherwise no else statement so do not print.
@@ -71,11 +108,11 @@ macro_rules! detail {
                 // Don't print the ascii art
                 $crate::tui::println_safe(format_args!("{}", $name));
             } else {
-                $crate::tui::println_safe(format_args!(
-                    "{} {}",
+                $crate::tui::print_tagged(
                     ansi_term::Colour::Blue.bold().paint("[~]"),
-                    $name
-                ));
+                    "[~]",
+                    $name,
+                );
             }
         }
     };
@@ -84,11 +121,11 @@ macro_rules! detail {
 #[macro_export]
 macro_rules! output {
     ($name:expr) => {
-        $crate::tui::println_safe(format_args!(
-            "{} {}",
+        $crate::tui::print_tagged(
             ansi_term::Colour::RGB(0, 255, 9).bold().paint("[>]"),
-            $name
-        ));
+            "[>]",
+            $name,
+        );
     };
     ($name:expr, $greppable:expr, $accessible:expr) => {
         // if not greppable then print, otherwise no else statement so do not print.
@@ -97,11 +134,11 @@ macro_rules! output {
                 // Don't print the ascii art
                 $crate::tui::println_safe(format_args!("{}", $name));
             } else {
-                $crate::tui::println_safe(format_args!(
-                    "{} {}",
+                $crate::tui::print_tagged(
                     ansi_term::Colour::RGB(0, 255, 9).bold().paint("[>]"),
-                    $name
-                ));
+                    "[>]",
+                    $name,
+                );
             }
         }
     };
@@ -146,4 +183,30 @@ macro_rules! funny_opening {
 
         $crate::tui::println_safe(format_args!("{}\n", random_quote));
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::colors_enabled_for;
+    use std::ffi::OsStr;
+
+    // `colors_enabled` itself reads the process environment, which parallel
+    // tests cannot safely mutate, so only the pure helper is tested here.
+
+    #[test]
+    fn colors_stay_on_when_no_color_is_unset_or_empty() {
+        assert!(colors_enabled_for(None));
+        assert!(colors_enabled_for(Some(OsStr::new(""))));
+    }
+
+    #[test]
+    fn colors_turn_off_when_no_color_has_any_value() {
+        for value in ["1", "true", "0", " "] {
+            assert!(
+                !colors_enabled_for(Some(OsStr::new(value))),
+                "NO_COLOR={:?} should disable colors",
+                value
+            );
+        }
+    }
 }
