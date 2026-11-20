@@ -65,8 +65,24 @@ fn parse_addresses_with_resolver(
     }
 
     // If we got to this point this can only be a file path or the wrong input.
-    for file_path in unresolved_addresses {
-        let file_path = Path::new(file_path);
+    for address in unresolved_addresses {
+        // A block too wide to expand is valid notation, not a missing host, so
+        // name the real reason it was skipped.
+        if let Ok(net_addr) = IpInet::from_str(address) {
+            warning!(
+                format!(
+                    "Host {address:?} spans {} addresses, more than the \
+                     {MAX_CIDR_ADDRESSES} RustScan expands; split the block up.",
+                    cidr_size(&net_addr)
+                ),
+                input.greppable,
+                input.accessible
+            );
+
+            continue;
+        }
+
+        let file_path = Path::new(address);
 
         if !file_path.is_file() {
             warning!(
@@ -115,6 +131,27 @@ pub fn parse_address(address: &str, resolver: &Resolver) -> Vec<IpAddr> {
     parse_address_with_resolver(address, &|| resolver)
 }
 
+/// Largest CIDR block that gets expanded into addresses.
+///
+/// A block is expanded eagerly into a `Vec<IpAddr>`, 16 bytes per address, so
+/// 2^24 already costs 256 MiB. Anything wider does not fail politely: an IPv4
+/// `/0` asks for 68 GiB and the allocation failure aborts the process, and an
+/// IPv6 `/64` asks for 2^64 entries, which trips the allocator's own capacity
+/// check and aborts just as hard. Both are one command-line argument away, so
+/// the expansion is refused before it starts.
+const MAX_CIDR_ADDRESSES: u128 = 1 << 24;
+
+/// Number of addresses a CIDR block contains.
+fn cidr_size(net: &IpInet) -> u128 {
+    let address_bits = if net.is_ipv4() { 32 } else { 128 };
+    let host_bits = address_bits - u32::from(net.network_length());
+    if host_bits >= 128 {
+        u128::MAX
+    } else {
+        1u128 << host_bits
+    }
+}
+
 fn parse_address_with_resolver<'a>(
     address: &str,
     resolver: &impl Fn() -> &'a Resolver,
@@ -124,6 +161,9 @@ fn parse_address_with_resolver<'a>(
         vec![addr]
     } else if let Ok(net_addr) = IpInet::from_str(address) {
         // `address` is a CIDR string
+        if cidr_size(&net_addr) > MAX_CIDR_ADDRESSES {
+            return Vec::new();
+        }
         net_addr.network().into_iter().addresses().collect()
     } else {
         // `address` is a hostname or DNS name
@@ -315,7 +355,7 @@ fn read_ips_from_file<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_addresses, parse_addresses_with_resolver, Opts};
+    use super::{cidr_size, parse_addresses, parse_addresses_with_resolver, Opts};
     use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
@@ -355,6 +395,33 @@ mod tests {
             panic!("empty targets must not initialize DNS")
         })
         .is_empty());
+    }
+
+    #[test]
+    fn cidr_size_counts_addresses() {
+        assert_eq!(cidr_size(&"10.0.0.0/24".parse().unwrap()), 1 << 8);
+        assert_eq!(cidr_size(&"10.0.0.0/0".parse().unwrap()), 1 << 32);
+        assert_eq!(cidr_size(&"2001:db8::/64".parse().unwrap()), 1u128 << 64);
+        // A zero-length IPv6 prefix is wider than u128 can count.
+        assert_eq!(cidr_size(&"::/0".parse().unwrap()), u128::MAX);
+    }
+
+    #[test]
+    fn oversized_cidr_is_skipped_instead_of_aborting() {
+        // Both of these used to abort the process while being expanded: the
+        // IPv6 block asks for 2^64 entries and the IPv4 one for 68 GiB.
+        for address in ["2001:db8::/64", "10.0.0.0/0"] {
+            let opts = Opts {
+                addresses: vec![address.to_owned()],
+                ..Default::default()
+            };
+
+            assert!(
+                parse_addresses(&opts).is_empty(),
+                "{} should not be expanded",
+                address
+            );
+        }
     }
 
     #[test]
